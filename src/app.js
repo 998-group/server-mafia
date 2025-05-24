@@ -18,4 +18,5 @@ app.get('/', (req, res) => {
   res.send('🎮 Mafia Game API is running...');
 });
 
+
 export default app;
