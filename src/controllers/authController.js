@@ -29,11 +29,12 @@ export const login = async (req, res) => {
   }
 
   try {
-    const user = UserModel.findOne({ username, password });
+    const user = await UserModel.findOne({ username, password });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
-    res.status(200).json(user);
+
+    res.status(200).json(user); // Bu yerda endi xatolik chiqmaydi
   } catch (e) {
     console.log(e);
     res.status(500).json({ error: e.message });
