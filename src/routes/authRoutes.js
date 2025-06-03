@@ -1,5 +1,7 @@
 import express from "express";
 import { register, login, getAllUsers } from "../controllers/authController.js";
+import verifyToken from "../middlewares/verifyToken.js";
+
 
 const router = express.Router();
 
@@ -87,6 +89,6 @@ router.post('/login', login);
  *                   username:
  *                     type: string
  */
-router.get('/users/all', getAllUsers);
+router.get('/users/all', verifyToken, getAllUsers); // 🔒 Token kerak
 
 export default router;
