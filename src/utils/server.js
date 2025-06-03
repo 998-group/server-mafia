@@ -3,9 +3,9 @@ import http from 'http';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
-import connectDB from './config/db.js';
+import connectDB from '../config/db.js';
 import app from './app.js';
-import { socketHandler } from './socket/gameSocket.js';
+import { socketHandler } from '../socket/gameSocket.js';
 
 dotenv.config();
 
