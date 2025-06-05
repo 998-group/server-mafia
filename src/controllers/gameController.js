@@ -57,10 +57,15 @@ export const joinRoom = async (req, res) => {
 export const getRoomInfo = async (req, res) => {
   try {
     const { roomId } = req.params;
+    console.log("roomID: ", roomId);
+
     const game = await Game.findOne({ roomId }).populate(
       "players.userId",
       "username"
     );
+
+    console.log("game: ",!game);
+
     if (!game) return res.status(404).json({ message: "Room topilmadi" });
 
     res.status(200).json(game);
