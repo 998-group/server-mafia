@@ -1,22 +1,22 @@
+// src/app.js
 import express from 'express';
 import cors from 'cors';
-import authRoutes from './routes/authRoutes.js';
-import gameRoutes from './routes/gameRoutes.js';
+import morgan from 'morgan';
+import swaggerUi from 'swagger-ui-express';
+import swaggerSpec from './config/swagger.js';
+import authRoutes from './routes/authRoutes.js'; // Make sure this file exports your routes
 
 const app = express();
 
-// 🌐 Middleware
 app.use(cors());
 app.use(express.json());
+app.use(morgan('dev'));
 
-// 🛣 API marshrutlar
-app.use('/api/auth', authRoutes);
-app.use('/api/game', gameRoutes);
+// Swagger endpoint
+app.use("/api-docs/mafia_998", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// 🔁 Default route (optional)
-app.get('/', (req, res) => {
-  res.send('🎮 Mafia Game API is running...');
-});
 
+// Your API routes
+app.use("/api/auth", authRoutes);
 
 export default app;
