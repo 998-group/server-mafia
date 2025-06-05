@@ -12,8 +12,18 @@ const swaggerOptions = {
     info: {
       title: "Mafia API",
       version: "1.0.0",
-      description: "API documentation for the Mafia game backend",
+      description: "It was created from sardor",
     },
+    servers: [
+      {
+        url: "https://server-mafia.onrender.com",
+        description: "Production server",
+      },
+      {
+        url: "http://localhost:5000",
+        description: "Local server",
+      },
+    ],
     components: {
       securitySchemes: {
         bearerAuth: {
@@ -31,6 +41,7 @@ const swaggerOptions = {
   },
   apis: [path.join(__dirname, "../routes/*.js")],
 };
+
 
 const swaggerSpec = swaggerJSDoc(swaggerOptions);
 export default swaggerSpec;
