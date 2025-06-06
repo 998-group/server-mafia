@@ -1,4 +1,5 @@
 import UserModel from "../models/User.js";
+import jwt from "jsonwebtoken";
 
 export const register = async (req, res) => {
   const { username, password } = req.body;
@@ -33,7 +34,21 @@ export const login = async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
-    res.status(200).json(user);
+
+    const token = jwt.sign(
+      { id: user._id, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    res.status(200).json({
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+      },
+    });
   } catch (e) {
     console.log(e);
     res.status(500).json({ error: e.message });

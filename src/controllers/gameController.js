@@ -5,16 +5,17 @@ import mongoose from "mongoose";
 // 1. 🏠 Room yaratish
 export const createRoom = async (req, res) => {
   try {
-    const { hostId } = req.body;
+    const { hostId, roomName } = req.body;
     const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
 
     const newGame = await Game.create({
       roomId,
       hostId,
+      roomName,
       players: [],
     });
 
-    res.status(201).json({ message: "Room yaratildi", roomId });
+    res.status(201).json({ message: "Room yaratildi", newGame });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -56,10 +57,15 @@ export const joinRoom = async (req, res) => {
 export const getRoomInfo = async (req, res) => {
   try {
     const { roomId } = req.params;
+    console.log("roomID: ", roomId);
+
     const game = await Game.findOne({ roomId }).populate(
       "players.userId",
       "username"
     );
+
+    console.log("game: ",!game);
+
     if (!game) return res.status(404).json({ message: "Room topilmadi" });
 
     res.status(200).json(game);
@@ -108,7 +114,6 @@ export const getAllGames = async (req, res) => {
       .limit(100); // ixtiyoriy: faqat 100 ta
     console.log(games);
 
-    
     res.status(200).json({ success: true, count: games.length, games });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
