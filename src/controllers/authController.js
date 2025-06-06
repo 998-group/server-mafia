@@ -29,7 +29,7 @@ export const login = async (req, res) => {
   }
 
   try {
-    const user = UserModel.findOne({ username, password });
+    const user = await UserModel.findOne({ username, password });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
