@@ -19,7 +19,9 @@ export const socketHandler = (io) => {
           return;
         }
 
-        const alreadyInRoom = gameRoom.players.some(p => p.userId.toString() === userId);
+        const alreadyInRoom = gameRoom.players.some(
+          (p) => p.userId.toString() === userId
+        );
         if (!alreadyInRoom) {
           gameRoom.players.push({
             userId,
@@ -30,37 +32,44 @@ export const socketHandler = (io) => {
           await gameRoom.save();
         }
 
-        socket.join(roomId);
-        socketUserMap.set(socket.id, { userId, roomId });
+        const antiDuplicate = gameRoom.players.every(
+          (user) => user._id === userId
+        );
 
-        io.to(roomId).emit("update_players", gameRoom.players);
-        socket.emit("joined_room", gameRoom)
-        console.log(`✅ ${username} (${userId}) joined ${roomId}`);
+        if (!antiDuplicate) {
+          socket.join(roomId);
+          socketUserMap.set(socket.id, { userId, roomId });
+          io.to(roomId).emit("update_players", gameRoom.players);
+          socket.emit("joined_room", gameRoom);
+          console.log(`✅ ${username} (${userId}) joined ${roomId}`);
+        }
       } catch (err) {
         console.error("❌ join_room error:", err.message);
       }
     });
 
     socket.on("ready", async ({ roomId, userId }) => {
-      try{
+      try {
         const gameRoom = await Game.findOne({ roomId });
-        if(!gameRoom) {
+        if (!gameRoom) {
           console.log("❌ Room not found:", roomId);
           socket.emit("notification", {
             type: "error",
-            message: "Room not found"
-          })
+            message: "Room not found",
+          });
           return;
         }
 
-        const player = gameRoom.players.find(p => p.userId.toString() === userId);
+        const player = gameRoom.players.find(
+          (p) => p.userId.toString() === userId
+        );
         console.log("👤 Ready:", player);
-        if(!player) {
+        if (!player) {
           console.log("❌ Player not found:", userId);
           socket.emit("notification", {
             type: "error",
-            message: "Player not found"
-          })
+            message: "Player not found",
+          });
           return;
         }
 
@@ -69,28 +78,29 @@ export const socketHandler = (io) => {
 
         socket.emit("notification", {
           type: "success",
-          message: "You are " + (player.isReady ? "ready" : "not ready")
-        })
+          message: "You are " + (player.isReady ? "ready" : "not ready"),
+        });
 
         io.to(roomId).emit("update_players", gameRoom.players);
 
-        if (gameRoom.players.every(p => p.isReady)) {
-          if (gameRoom.players.length >= 2 ) {
+        if (gameRoom.players.every((p) => p.isReady)) {
+          if (gameRoom.players.length >= 2) {
             io.to(roomId).emit("start_game");
           }
-          
         }
-      } catch(e) {
+      } catch (e) {
         console.error("❌ ready error:", e.message);
       }
-  })
+    });
 
     socket.on("leave_room", async ({ roomId, userId }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
-        gameRoom.players = gameRoom.players.filter(p => p.userId.toString() !== userId);
+        gameRoom.players = gameRoom.players.filter(
+          (p) => p.userId.toString() !== userId
+        );
         await gameRoom.save();
 
         socket.leave(roomId);
@@ -101,8 +111,6 @@ export const socketHandler = (io) => {
       }
     });
 
-    
-
     socket.on("disconnect", async () => {
       const session = socketUserMap.get(socket.id);
       if (!session) return;
@@ -111,7 +119,9 @@ export const socketHandler = (io) => {
       const gameRoom = await Game.findOne({ roomId });
       if (!gameRoom) return;
 
-      gameRoom.players = gameRoom.players.filter(p => p.userId.toString() !== userId);
+      gameRoom.players = gameRoom.players.filter(
+        (p) => p.userId.toString() !== userId
+      );
       await gameRoom.save();
 
       socket.leave(roomId);

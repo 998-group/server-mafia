@@ -1,10 +1,10 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const playerSchema = new mongoose.Schema(
   {
     userId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'UserMafia',
+      ref: "UserMafia",
       required: true,
     },
     username: String,
@@ -22,7 +22,7 @@ const playerSchema = new mongoose.Schema(
 );
 
 const gameSchema = new mongoose.Schema(
-  { 
+  {
     roomName: {
       type: String,
       required: true,
@@ -34,14 +34,14 @@ const gameSchema = new mongoose.Schema(
     },
     hostId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'UserMafia',
+      ref: "UserMafia",
       required: true,
     },
     players: [playerSchema],
     phase: {
       type: String,
-      enum: ['waiting', 'night', 'day', 'ended'],
-      default: 'waiting',
+      enum: ["waiting", "night", "day", "ended"],
+      default: "waiting",
     },
     currentTurn: {
       type: Number,
@@ -49,7 +49,7 @@ const gameSchema = new mongoose.Schema(
     },
     winner: {
       type: String,
-      enum: ['mafia', 'villagers', null],
+      enum: ["mafia", "villagers", null],
       default: null,
     },
     endedAt: Date,
@@ -57,4 +57,11 @@ const gameSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-export default mongoose.model('Game', gameSchema);
+gameSchema.pre("save", async function (next) {
+  if (this.players.length === 0) {
+    await this.deleteOne(); // yoki this.remove()
+    console.log("Room auto-deleted by middleware");
+  }
+  next();
+});
+export default mongoose.model("Game", gameSchema);
