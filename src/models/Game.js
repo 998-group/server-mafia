@@ -8,7 +8,7 @@ const playerSchema = new mongoose.Schema(
       required: true,
     },
     username: String,
-    gameRole: String, // 'mafia', 'villager', 'detective', etc.
+    gameRole: String,
     isAlive: {
       type: Boolean,
       default: true,
@@ -23,30 +23,16 @@ const playerSchema = new mongoose.Schema(
 
 const gameSchema = new mongoose.Schema(
   {
-    roomName: {
-      type: String,
-      required: true,
-    },
-    roomId: {
-      type: String,
-      required: true,
-      unique: true,
-    },
-    hostId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "UserMafia",
-      required: true,
-    },
+    roomName: { type: String, required: true },
+    roomId: { type: String, required: true, unique: true },
+    hostId: { type: mongoose.Schema.Types.ObjectId, ref: "UserMafia", required: true },
     players: [playerSchema],
     phase: {
       type: String,
       enum: ["waiting", "night", "day", "ended"],
       default: "waiting",
     },
-    currentTurn: {
-      type: Number,
-      default: 0,
-    },
+    currentTurn: { type: Number, default: 0 },
     winner: {
       type: String,
       enum: ["mafia", "villagers", null],
@@ -56,13 +42,5 @@ const gameSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
-gameSchema.pre("save", async function (next) {
-  if (this.players.length === 0) {
-    await this.deleteOne(); // yoki this.remove()
-    console.log("Room auto-deleted by middleware");
-  }
-  next();
-});
 
 export default mongoose.model("Game", gameSchema);

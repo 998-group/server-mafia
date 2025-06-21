@@ -1,23 +1,41 @@
 import Game from "../models/Game.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
+import { nanoid } from "nanoid";
 
 // 1. 🏠 Room yaratish
 export const createRoom = async (req, res) => {
   try {
     const { hostId, roomName } = req.body;
-    const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+    const user = await User.findById(hostId);
+    if (!user) return res.status(404).json({ message: "Host user not found" });
+
+    const roomId = nanoid(6);
 
     const newGame = await Game.create({
+      roomName,
       roomId,
       hostId,
-      roomName,
-      players: [],
+      players: [
+        {
+          userId: user._id,
+          username: user.username || `User${user._id.toString().slice(-4)}`,
+          isAlive: true,
+          isReady: false,
+        },
+      ],
     });
+    await newGame.save()
+    console.log("newGame: ", newGame)
 
-    res.status(201).json({ message: "Room yaratildi", newGame });
+    return res.status(201).json({
+      message: "Room created",
+      newGame,
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("❌ createRoom error:", err.message);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -28,26 +46,28 @@ export const joinRoom = async (req, res) => {
     const { userId } = req.body;
 
     const game = await Game.findOne({ roomId });
-    if (!game) return res.status(404).json({ message: "Room topilmadi" });
+    if (!game) return res.status(404).json({ message: "Room not found" });
 
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User topilmadi" });
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const alreadyJoined = game.players.some(
       (p) => p.userId.toString() === userId
     );
     if (alreadyJoined) {
-      return res.status(200).json({ message: "Allaqachon qo‘shilgan", game });
+      return res.status(200).json({ message: "Already joined", game });
     }
 
     game.players.push({
       userId: user._id,
       username: user.username,
+      isAlive: true,
+      isReady: false,
     });
 
     await game.save();
 
-    res.status(200).json({ message: "Roomga qo‘shildingiz", game });
+    res.status(200).json({ message: "Joined the room", game });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -57,16 +77,13 @@ export const joinRoom = async (req, res) => {
 export const getRoomInfo = async (req, res) => {
   try {
     const { roomId } = req.params;
-    console.log("roomID: ", roomId);
 
     const game = await Game.findOne({ roomId }).populate(
       "players.userId",
       "username"
     );
 
-    console.log("game: ", !game);
-
-    if (!game) return res.status(404).json({ message: "Room topilmadi" });
+    if (!game) return res.status(404).json({ message: "Room not found" });
 
     res.status(200).json(game);
   } catch (err) {
@@ -85,7 +102,9 @@ export const saveGameResult = async (req, res) => {
       { new: true }
     );
 
-    res.status(200).json({ message: "Natija saqlandi", game });
+    if (!game) return res.status(404).json({ message: "Room not found" });
+
+    res.status(200).json({ message: "Game result saved", game });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -110,10 +129,9 @@ export const getUserHistory = async (req, res) => {
 // 6. 🔍 Barcha o‘yinlar ro‘yxatini olish
 export const getAllGames = async (req, res) => {
   try {
-    const games = await Game.find()
-      .sort({ createdAt: -1 }) // eng oxirgi o‘yinlar birinchi
-      .limit(100); // ixtiyoriy: faqat 100 ta
-    console.log(games);
+    const games = await Game.find({ players: { $not: { $size: 0 } } })
+      .sort({ createdAt: -1 })
+      .limit(100);
 
     res.status(200).json({ success: true, count: games.length, games });
   } catch (err) {
