@@ -22,10 +22,9 @@ export const socketHandler = (io) => {
     // Xonaga qo'shilish
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
-        console.log("joined_game:", {userId , roomId} )
+        console.log("joined_game:", { userId, roomId });
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
-
 
         const alreadyInRoom = gameRoom.players.some(
           (p) => p.userId.toString() === userId
@@ -46,7 +45,7 @@ export const socketHandler = (io) => {
         io.to(roomId).emit("update_players", gameRoom.players);
         socket.emit("joined_room", gameRoom);
         await sendRooms();
-        console.log(gameRoom)
+        console.log(gameRoom);
         console.log(`✅ ${username} joined room ${roomId}`);
       } catch (err) {
         console.error("❌ join_room error:", err.message);
@@ -79,6 +78,10 @@ export const socketHandler = (io) => {
           gameRoom.players.every((p) => p.isReady);
         if (allReady) {
           io.to(roomId).emit("start_game");
+          console.log("START GAME")
+          io.to(roomId).emit("game_players", gameRoom);
+          console.log("Game_Players")
+
         }
       } catch (e) {
         console.error("❌ ready error:", e.message);
