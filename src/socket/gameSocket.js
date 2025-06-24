@@ -19,10 +19,20 @@ export const socketHandler = (io) => {
       await sendRooms();
     });
 
+    socket.on("send_message", ({ roomId, message }) => {
+      console.log("habar keldi");
+      console.log(message);
+      
+      io.to(roomId).emit("receive_message", message);
+      // io.emit("receive_message", message);
+    });
+
     // Xonaga qo'shilish
     socket.on("join_room", async ({ roomId, userId, username }) => {
+
+      
       try {
-        console.log("joined_game:", {userId , roomId} )
+        console.log("joined_game:", { userId, roomId })
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
