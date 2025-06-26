@@ -148,5 +148,12 @@ export const socketHandler = (io) => {
         console.error("❌ disconnect error:", err.message);
       }
     });
+
+    socket.on("get_players", async (data) => {
+      console.log("data", data)
+      const gameRoom = await Game.findOne({ roomId: data });
+      console.log("gameRoom:", gameRoom)
+      socket.emit("update_players", gameRoom.players);
+    })
   });
 };
