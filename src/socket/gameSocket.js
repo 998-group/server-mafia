@@ -78,10 +78,9 @@ export const socketHandler = (io) => {
           gameRoom.players.every((p) => p.isReady);
         if (allReady) {
           io.to(roomId).emit("start_game");
-          console.log("START GAME")
+          console.log("START GAME");
           io.to(roomId).emit("game_players", gameRoom);
-          console.log("Game_Players")
-
+          console.log("Game_Players");
         }
       } catch (e) {
         console.error("❌ ready error:", e.message);
@@ -150,10 +149,39 @@ export const socketHandler = (io) => {
     });
 
     socket.on("get_players", async (data) => {
-      console.log("data", data)
       const gameRoom = await Game.findOne({ roomId: data });
-      console.log("gameRoom:", gameRoom)
-      socket.emit("update_players", gameRoom.players);
-    })
+      socket.emit("update_players", gameRoom?.players);
+    });
+    
+    const roomTimers = new Map(); // roomId => intervalId
+
+    socket.on("get_time", (roomId) => {
+      if (roomTimers.has(roomId)) return; // Allaqachon timer bor bo‘lsa — qaytamiz
+
+      const countdownTime = 5 * 60 * 1000;
+      const endTime = Date.now() + countdownTime;
+
+      const intervalId = setInterval(() => {
+        const now = Date.now();
+        const timeLeft = endTime - now;
+
+        if (timeLeft <= 0) {
+          io.to(roomId).emit("time_update", "00:00");
+          clearInterval(intervalId);
+          roomTimers.delete(roomId);
+          return;
+        }
+
+        const minutes = Math.floor(timeLeft / 1000 / 60);
+        const seconds = Math.floor((timeLeft / 1000) % 60);
+        const formatted = `${String(minutes).padStart(2, "0")}:${String(
+          seconds
+        ).padStart(2, "0")}`;
+        console.log(formatted);
+        io.to(roomId).emit("time_update", formatted);
+      }, 1000);
+
+      roomTimers.set(roomId, intervalId);
+    });
   });
 };
