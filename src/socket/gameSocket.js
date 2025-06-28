@@ -45,9 +45,10 @@ export const socketHandler = (io) => {
     // 🔹 JOIN GAME ROOM
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
+        console.log("joined_game:", { userId, roomId });
         const gameRoom = await Game.findOne({ roomId });
-        if (!gameRoom) return console.log("❌ Game room not found:", roomId);
-    
+        if (!gameRoom) return;
+
         const alreadyInRoom = gameRoom.players.some(
           (p) => p.userId.toString() === userId
         );
@@ -97,6 +98,10 @@ export const socketHandler = (io) => {
 
         if (allReady) {
           io.to(roomId).emit("start_game");
+          console.log("START GAME")
+          io.to(roomId).emit("game_players", gameRoom);
+          console.log("Game_Players")
+
         }
       } catch (e) {
         console.error("❌ ready error:", e);
@@ -165,5 +170,12 @@ export const socketHandler = (io) => {
         console.error("❌ disconnect error:", err);
       }
     });
+
+    socket.on("get_players", async (data) => {
+      console.log("data", data)
+      const gameRoom = await Game.findOne({ roomId: data });
+      console.log("gameRoom:", gameRoom)
+      socket.emit("update_players", gameRoom.players);
+    })
   });
 };
