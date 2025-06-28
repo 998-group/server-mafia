@@ -1,3 +1,4 @@
+// controllers/gameController.js
 import Game from "../models/Game.js";
 import User from "../models/User.js";
 import mongoose from "mongoose";
@@ -26,20 +27,16 @@ export const createRoom = async (req, res) => {
         },
       ],
     });
-    await newGame.save()
-    console.log("newGame: ", newGame)
 
-    return res.status(201).json({
-      message: "Room created",
-      newGame,
-    });
+    console.log("newGame: ", newGame);
+    return res.status(201).json({ message: "Room created", newGame });
   } catch (err) {
     console.error("❌ createRoom error:", err.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
 
-// 2. 🙋‍♂️ Roomga qo'shilish
+// 2. 👤 Roomga qo'shilish
 export const joinRoom = async (req, res) => {
   try {
     const { roomId } = req.params;
@@ -66,7 +63,6 @@ export const joinRoom = async (req, res) => {
     });
 
     await game.save();
-
     res.status(200).json({ message: "Joined the room", game });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -84,7 +80,6 @@ export const getRoomInfo = async (req, res) => {
     );
 
     if (!game) return res.status(404).json({ message: "Room not found" });
-
     res.status(200).json(game);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -103,7 +98,6 @@ export const saveGameResult = async (req, res) => {
     );
 
     if (!game) return res.status(404).json({ message: "Room not found" });
-
     res.status(200).json({ message: "Game result saved", game });
   } catch (err) {
     res.status(500).json({ message: err.message });
