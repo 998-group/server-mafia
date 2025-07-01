@@ -126,6 +126,7 @@ export const socketHandler = (io) => {
         if (allReady) {
           gameRoom.phase = "started";
           await gameRoom.save();
+          console.log("Game room", gameRoom)
 
           io.to(roomId).emit("start_game");
           console.log("✅ START GAME");
@@ -145,10 +146,12 @@ export const socketHandler = (io) => {
         `📥 Event: start_timer for room ${roomId}, duration: ${duration}`
       );
       startRoomTimer(roomId, duration);
+      
     });
     socket.on("game_phase", async ({ roomId }) => {
       console.log(`📥 Event: game_phase for room ${roomId}`);
       try {
+        console.log("game phase", gameRoom.phase);
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
@@ -159,7 +162,6 @@ export const socketHandler = (io) => {
           gameRoom.phase = "day";
           startRoomTimer(roomId, 180); // 3 minut
         } else if (gameRoom.phase === "day") {
-          gameRoom.phase = "ended";
           gameRoom.endedAt = new Date();
           startRoomTimer(roomId, 180); // 3 minut
         } else if (gameRoom.phase === "ended") {
@@ -171,6 +173,8 @@ export const socketHandler = (io) => {
             p.isAlive = true;
             p.gameRole = null;
           });
+
+        
           // ❌ No timer for waiting phase
         }
 
