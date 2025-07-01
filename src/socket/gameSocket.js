@@ -2,7 +2,7 @@ import Game from "../models/Game.js";
 
 export const socketHandler = (io) => {
   const socketUserMap = new Map();
-  const roomTimers = {}; // 🕒 Сюда будем сохранять таймеры по комнатам
+  const roomTimers = {};
 
   const sendRooms = async () => {
     const rooms = await Game.find({ players: { $not: { $size: 0 } } })
@@ -11,66 +11,94 @@ export const socketHandler = (io) => {
     io.emit("update_rooms", rooms);
   };
 
-  // 🕒 Функция запуска таймера для комнаты
+  const generateRoles = (playerCount) => {
+    const roles = [];
+    const mafiaCount = Math.max(1, Math.floor(playerCount / 4));
+    const doctorCount = playerCount >= 5 ? 1 : 0;
+    const detectiveCount = playerCount >= 6 ? 1 : 0;
+
+    for (let i = 0; i < mafiaCount; i++) roles.push("mafia");
+    if (doctorCount) roles.push("doctor");
+    if (detectiveCount) roles.push("detective");
+
+    while (roles.length < playerCount) roles.push("peaceful");
+
+    return roles.sort(() => Math.random() - 0.5);
+  };
+
   const startRoomTimer = (roomId, durationInSeconds) => {
     let timeLeft = durationInSeconds;
 
-    if (roomTimers[roomId]) {
-      clearInterval(roomTimers[roomId]);
-    }
+    if (roomTimers[roomId]) clearInterval(roomTimers[roomId]);
 
-    roomTimers[roomId] = setInterval(() => {
+    roomTimers[roomId] = setInterval(async () => {
       if (timeLeft <= 0) {
         clearInterval(roomTimers[roomId]);
         delete roomTimers[roomId];
+
         io.to(roomId).emit("timer_end");
-        console.log(`⏰ Timer for room ${roomId} ended`);
+
+        try {
+          const gameRoom = await Game.findOne({ roomId });
+          if (!gameRoom) return;
+
+          if (gameRoom.phase === "started") {
+            gameRoom.phase = "night";
+            startRoomTimer(roomId, 180);
+          } else if (gameRoom.phase === "night") {
+            gameRoom.phase = "day";
+            startRoomTimer(roomId, 180);
+          } else if (gameRoom.phase === "day") {
+            gameRoom.phase = "ended";
+            gameRoom.endedAt = new Date();
+            startRoomTimer(roomId, 10);
+          } else if (gameRoom.phase === "ended") {
+            gameRoom.phase = "waiting";
+            gameRoom.winner = null;
+            gameRoom.currentTurn = 0;
+            gameRoom.players.forEach((p) => {
+              p.isReady = false;
+              p.isAlive = true;
+              p.gameRole = null;
+            });
+          }
+
+          await gameRoom.save();
+          io.to(roomId).emit("game_phase", gameRoom);
+        } catch (err) {
+          console.error("❌ Auto-phase error:", err.message);
+        }
+
         return;
       }
 
       io.to(roomId).emit("timer_update", { timeLeft });
-      console.log(`🕒 Room ${roomId} - Time left: ${timeLeft} seconds`); // ✅ Вот эта строка добавлена
-
       timeLeft--;
     }, 1000);
-
-    console.log(
-      `🕒 Timer started for room ${roomId}: ${durationInSeconds} seconds`
-    );
   };
 
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
 
-    // 🔹 REQUEST ROOMS
     socket.on("request_rooms", async () => {
-      console.log("📥 Event: request_rooms");
       await sendRooms();
     });
 
-    // 🔹 SEND MESSAGE
     socket.on("send_message", ({ roomId, message }) => {
-      console.log("📥 Event: send_message");
-      console.log("📩 Message received:", message);
       io.to(String(roomId)).emit("receive_message", message);
     });
 
-    // 🔹 JOIN TEST ROOM
     socket.on("join_test", async (roomId) => {
-      console.log("📥 Event: join_test");
       try {
         await socket.join(String(roomId));
-        console.log("✅ Test room joined:", roomId);
         io.to(roomId).emit("test_message", "Welcome to test room!");
       } catch (err) {
         console.error("❌ join_test error:", err);
       }
     });
 
-    // 🔹 JOIN GAME ROOM
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
-        console.log("joined_game:", { userId, roomId });
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
@@ -97,9 +125,7 @@ export const socketHandler = (io) => {
       }
     });
 
-    // 🔹 PLAYER READY
     socket.on("ready", async ({ roomId, userId }) => {
-      console.log("📥 Event: ready");
       try {
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
@@ -124,16 +150,18 @@ export const socketHandler = (io) => {
           gameRoom.players.every((p) => p.isReady);
 
         if (allReady) {
+          // 🔰 Role tayinlash
+          const shuffled = [...gameRoom.players].sort(() => Math.random() - 0.5);
+          const roles = generateRoles(shuffled.length);
+          shuffled.forEach((player, i) => {
+            player.gameRole = roles[i];
+          });
+
           gameRoom.phase = "started";
           await gameRoom.save();
-          console.log("Game room", gameRoom)
 
           io.to(roomId).emit("start_game");
-          console.log("✅ START GAME");
-
           io.to(roomId).emit("game_players", gameRoom);
-          console.log("📤 Game_Players");
-
           startRoomTimer(roomId, 60);
         }
       } catch (e) {
@@ -142,28 +170,24 @@ export const socketHandler = (io) => {
     });
 
     socket.on("start_timer", ({ roomId, duration }) => {
-      console.log(
-        `📥 Event: start_timer for room ${roomId}, duration: ${duration}`
-      );
       startRoomTimer(roomId, duration);
-      
     });
+
     socket.on("game_phase", async ({ roomId }) => {
-      console.log(`📥 Event: game_phase for room ${roomId}`);
       try {
-        console.log("game phase", gameRoom.phase);
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
         if (gameRoom.phase === "started") {
           gameRoom.phase = "night";
-          startRoomTimer(roomId, 180); // 3 minut
+          startRoomTimer(roomId, 180);
         } else if (gameRoom.phase === "night") {
           gameRoom.phase = "day";
-          startRoomTimer(roomId, 180); // 3 minut
+          startRoomTimer(roomId, 180);
         } else if (gameRoom.phase === "day") {
+          gameRoom.phase = "ended";
           gameRoom.endedAt = new Date();
-          startRoomTimer(roomId, 180); // 3 minut
+          startRoomTimer(roomId, 180);
         } else if (gameRoom.phase === "ended") {
           gameRoom.phase = "waiting";
           gameRoom.winner = null;
@@ -173,22 +197,16 @@ export const socketHandler = (io) => {
             p.isAlive = true;
             p.gameRole = null;
           });
-
-        
-          // ❌ No timer for waiting phase
         }
 
         await gameRoom.save();
         io.to(roomId).emit("game_phase", gameRoom);
-        console.log(`🔁 Phase changed to: ${gameRoom.phase}`);
       } catch (e) {
         console.error("❌ game_phase error:", e.message);
       }
     });
 
-    // 🔹 LEAVE ROOM
     socket.on("leave_room", async ({ roomId, userId }) => {
-      console.log("📥 Event: leave_room");
       try {
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
@@ -201,7 +219,6 @@ export const socketHandler = (io) => {
           await Game.deleteOne({ roomId });
           io.to(roomId).emit("room_closed");
 
-          // 🕒 Остановить таймер если все вышли
           if (roomTimers[roomId]) {
             clearInterval(roomTimers[roomId]);
             delete roomTimers[roomId];
@@ -214,16 +231,12 @@ export const socketHandler = (io) => {
         socket.leave(roomId);
         socketUserMap.delete(socket.id);
         await sendRooms();
-
-        console.log(`🚪 ${userId} left ${roomId}`);
       } catch (e) {
         console.error("❌ leave_room error:", e);
       }
     });
 
-    // 🔹 DISCONNECT
     socket.on("disconnect", async () => {
-      console.log("📥 Event: disconnect");
       const session = socketUserMap.get(socket.id);
       if (!session) return;
 
@@ -241,7 +254,6 @@ export const socketHandler = (io) => {
           await Game.deleteOne({ roomId });
           io.to(roomId).emit("room_closed");
 
-          // 🕒 Остановить таймер если никого нет
           if (roomTimers[roomId]) {
             clearInterval(roomTimers[roomId]);
             delete roomTimers[roomId];
@@ -254,16 +266,12 @@ export const socketHandler = (io) => {
         socket.leave(roomId);
         socketUserMap.delete(socket.id);
         await sendRooms();
-
-        console.log(`❌ Disconnected: ${userId}`);
       } catch (err) {
         console.error("❌ disconnect error:", err);
       }
     });
 
-    // 🔹 GET PLAYERS
     socket.on("get_players", async (data) => {
-      console.log("📥 Event: get_players", data);
       const gameRoom = await Game.findOne({ roomId: data });
       if (gameRoom) {
         socket.emit("update_players", gameRoom.players);
