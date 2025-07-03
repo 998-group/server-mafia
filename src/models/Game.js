@@ -19,7 +19,7 @@ const gameSchema = new mongoose.Schema({
   players: [playerSchema],
   phase: {
     type: String,
-    enum: ["waiting", "night", "day", "ended"],
+    enum: ["waiting","started","night", "day", "ended"],
     default: "waiting",
   },
   currentTurn: { type: Number, default: 0 },
