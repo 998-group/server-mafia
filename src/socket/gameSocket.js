@@ -1,5 +1,5 @@
 import Game from "../models/Game.js";
-
+import GlobalChat from "../models/GlobalChat.js";
 export const socketHandler = (io) => {
   const roomTimers = {}; // { [roomId]: { interval, timeLeft } }
 
@@ -93,6 +93,26 @@ export const socketHandler = (io) => {
 
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
+
+socket.on('send_message', async (data) => {
+  try {
+    console.log("message keldi:", data);
+
+    const newMessage = await GlobalChat.create({
+      sender: data.user.user._id,  // user._id bo'lishi kerak
+      text: data.message,
+    });
+
+    // Populate sender so we get the full user object (not just _id)
+    const populatedMessage = await newMessage.populate("sender", "_id username avatar role");
+
+    console.log("message saved:", populatedMessage);
+
+    io.emit('receive_message', populatedMessage);
+  } catch (err) {
+    console.error("❌ send_message error:", err.message);
+  }
+});
 
     socket.on("request_rooms", async () => {
       await sendRooms();
