@@ -28,20 +28,35 @@ export const socketHandler = (io) => {
 
   const startRoomTimer = (roomId, durationInSeconds) => {
     let timeLeft = durationInSeconds;
-
-    if (roomTimers[roomId]) clearInterval(roomTimers[roomId]);
-
+  
+    if (roomTimers[roomId]) {
+      clearInterval(roomTimers[roomId]);
+      console.log(`♻️ Oldingi timer tozalandi: ${roomId}`);
+    }
+  
+    console.log(`⏳ Timer boshladi | Room: ${roomId} | Duration: ${durationInSeconds}s`);
+  
     roomTimers[roomId] = setInterval(async () => {
+      io.to(roomId).emit("timer_update", { timeLeft });
+  
+      // DEBUG uchun log
+      if (timeLeft % 10 === 0 || timeLeft <= 5) {
+        console.log(`⏱️ ${roomId}: Qolgan vaqt - ${timeLeft}s`);
+      }
+  
       if (timeLeft <= 0) {
         clearInterval(roomTimers[roomId]);
         delete roomTimers[roomId];
-
+        console.log(`✅ Timer tugadi | Room: ${roomId}`);
+  
         io.to(roomId).emit("timer_end");
-
+  
         try {
           const gameRoom = await Game.findOne({ roomId });
           if (!gameRoom) return;
-
+  
+          console.log(`🔁 Faza almashtirilmoqda | Hozirgi faza: ${gameRoom.phase}`);
+  
           if (gameRoom.phase === "started") {
             gameRoom.phase = "night";
             startRoomTimer(roomId, 180);
@@ -62,20 +77,23 @@ export const socketHandler = (io) => {
               p.gameRole = null;
             });
           }
-
+  
           await gameRoom.save();
           io.to(roomId).emit("game_phase", gameRoom);
+          io.to(roomId).emit("game_players", gameRoom);
         } catch (err) {
           console.error("❌ Auto-phase error:", err.message);
         }
-
+  
         return;
       }
-
-      io.to(roomId).emit("timer_update", { timeLeft });
+  
       timeLeft--;
     }, 1000);
   };
+  
+  
+
 
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
@@ -205,6 +223,30 @@ export const socketHandler = (io) => {
         console.error("❌ game_phase error:", e.message);
       }
     });
+    socket.on("get_game_status", async ({ roomId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (gameRoom) {
+          const roomTimer = roomTimers[roomId];
+          let timeLeft = 0;
+    
+          if (roomTimer && roomTimer._idleStart && roomTimer._idleTimeout) {
+            const elapsed = (Date.now() - roomTimer._idleStart) / 1000;
+            timeLeft = Math.max(0, roomTimer._idleTimeout / 1000 - elapsed);
+          }
+    
+          console.log(`🔎 get_game_status: Room ${roomId} | Phase: ${gameRoom.phase} | TimeLeft: ${Math.floor(timeLeft)}s`);
+    
+          socket.emit("game_status", {
+            timeLeft: Math.floor(timeLeft),
+            phase: gameRoom.phase,
+          });
+        }
+      } catch (err) {
+        console.error("❌ get_game_status error:", err.message);
+      }
+    });
+    
 
     socket.on("leave_room", async ({ roomId, userId }) => {
       try {
