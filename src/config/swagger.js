@@ -1,4 +1,4 @@
-// src/config/swagger.js
+// swagger.js
 import swaggerJSDoc from "swagger-jsdoc";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -6,14 +6,24 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const options = {
+const swaggerOptions = {
   definition: {
     openapi: "3.0.0",
     info: {
       title: "Mafia API",
       version: "1.0.0",
-      description: "Mafia game backend API with Swagger and JWT auth",
+      description: "It was created from sardor",
     },
+    servers: [
+      {
+        url: "https://server-mafia.onrender.com",
+        description: "Production server",
+      },
+      {
+        url: "http://localhost:5000",
+        description: "Local server",
+      },
+    ],
     components: {
       securitySchemes: {
         bearerAuth: {
@@ -29,8 +39,9 @@ const options = {
       },
     ],
   },
-  apis: [path.join(__dirname, "../routes/*.js")], // TO‘G‘RI yo‘l
+  apis: [path.join(__dirname, "../routes/*.js")],
 };
 
-const swaggerSpec = swaggerJSDoc(options);
+
+const swaggerSpec = swaggerJSDoc(swaggerOptions);
 export default swaggerSpec;
