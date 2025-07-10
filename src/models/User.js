@@ -36,6 +36,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: "villager",
   },
+  roomId: {
+    type: String,
+    default: null,
+  },
   avatar: {
     type: String,
     default: "https://cdn-icons-png.flaticon.com/512/149/149071.png",

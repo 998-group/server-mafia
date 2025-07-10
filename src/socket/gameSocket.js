@@ -1,5 +1,6 @@
 import Game from "../models/Game.js";
 import GlobalChat from "../models/GlobalChat.js";
+import User from "../models/User.js";
 export const socketHandler = (io) => {
   const roomTimers = {}; // { [roomId]: { interval, timeLeft } }
 
@@ -94,25 +95,43 @@ export const socketHandler = (io) => {
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
 
-socket.on('send_message', async (data) => {
-  try {
-    console.log("message keldi:", data);
+    socket.on("create_room", async (data) => {
+      console.log("create_room", data)
+      try {
+        const newRoom = await Game.create({
+          roomId: data.roomId,
+          players: [],
+          hostId: data.user.user._id,
+          phase: "waiting",
+        });
+        io.emit("update_rooms", [newRoom]);
+      } catch (err) {
+        console.log(err)
+      }
+    })
 
-    const newMessage = await GlobalChat.create({
-      sender: data.user.user._id,  // user._id bo'lishi kerak
-      text: data.message,
+    socket.on("send_message", async (data) => {
+      try {
+        console.log("message keldi:", data);
+
+        const newMessage = await GlobalChat.create({
+          sender: data.user.user._id, // user._id bo'lishi kerak
+          text: data.message,
+        });
+
+        // Populate sender so we get the full user object (not just _id)
+        const populatedMessage = await newMessage.populate(
+          "sender",
+          "_id username avatar role"
+        );
+
+        console.log("message saved:", populatedMessage);
+
+        io.emit("receive_message", populatedMessage);
+      } catch (err) {
+        console.error("❌ send_message error:", err.message);
+      }
     });
-
-    // Populate sender so we get the full user object (not just _id)
-    const populatedMessage = await newMessage.populate("sender", "_id username avatar role");
-
-    console.log("message saved:", populatedMessage);
-
-    io.emit('receive_message', populatedMessage);
-  } catch (err) {
-    console.error("❌ send_message error:", err.message);
-  }
-});
 
     socket.on("request_rooms", async () => {
       await sendRooms();
@@ -124,6 +143,8 @@ socket.on('send_message', async (data) => {
 
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
+        const user = await User.findById(userId);
+        console.log("user: ", user);
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
