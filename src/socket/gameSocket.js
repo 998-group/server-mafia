@@ -1,7 +1,8 @@
 import Game from "../models/Game.js";
 import GlobalChat from "../models/GlobalChat.js";
 export const socketHandler = (io) => {
-  const roomTimers = {}; // { [roomId]: { interval, timeLeft } }
+  
+  const roomTimers = {};
 
   const sendRooms = async () => {
     const rooms = await Game.find({ players: { $not: { $size: 0 } } })
@@ -241,6 +242,7 @@ socket.on('send_message', async (data) => {
 
     socket.on("leave_room", async ({ roomId, userId }) => {
       try {
+  
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
