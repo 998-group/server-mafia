@@ -117,7 +117,7 @@ export const socketHandler = (io) => {
         });
 
         await newRoom.save(); // host qo‘shilgach saqlaymiz
-
+        
         // 3. Hostni roomga qo‘shamiz (socket.join)
         socket.join(newRoom.roomId);
         socket.data.userId = data.hostId;
