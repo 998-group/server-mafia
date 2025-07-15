@@ -129,7 +129,8 @@ export const socketHandler = (io) => {
         io.to(newRoom.roomId).emit("game_players", newRoom);
         io.to(newRoom.roomId).emit("game_phase", newRoom);
         await sendRooms();
-        console.log("Room debug", [newRoom]);
+        console.log("Room debug:", [newRoom]);
+        console.log("Debug player:", newRoom)
         console.log("Game:", Game);
       } catch (err) {
         console.log(err);
