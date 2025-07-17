@@ -99,7 +99,7 @@ export const socketHandler = (io) => {
 
     socket.on("create_room", async (data) => {
       console.log("data users:", data);
-      try {
+      try { 
         const owner = await User.findById(data.hostId)
         console.log("owner:", owner)
         const newRoom = await Game.create({
