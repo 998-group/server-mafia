@@ -6,6 +6,7 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerSpec from './config/swagger.js';
 import authRoutes from './routes/authRoutes.js'; // Make sure this file exports your routes
 import gameRoutes from './routes/gameRoutes.js';
+import './utils/roomCleaner.js'
 const app = express();
 
 app.use(cors());
