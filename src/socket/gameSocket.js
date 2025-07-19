@@ -1,7 +1,10 @@
 import Game from "../models/Game.js";
 import GlobalChat from "../models/GlobalChat.js";
+import User from "../models/User.js";
+import uniqId from "uniqid";
+
 export const socketHandler = (io) => {
-  const roomTimers = {}; // { [roomId]: { interval, timeLeft } }
+  const roomTimers = {};
 
   const sendRooms = async () => {
     const rooms = await Game.find({ players: { $not: { $size: 0 } } })
@@ -99,25 +102,71 @@ export const socketHandler = (io) => {
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
 
-socket.on('send_message', async (data) => {
-  try {
-    console.log("message keldi:", data);
+    socket.on("create_room", async (data) => {
+      console.log("data users:", data);
+      try { 
+        const owner = await User.findById(data.hostId)
+        console.log("owner:", owner)
+        const newRoom = await Game.create({
+          roomId: uniqId(),
+          roomName: data.roomName,
+          players: [],
+          hostId: data.hostId,
+          phase: "waiting",
+        });
 
-    const newMessage = await GlobalChat.create({
-      sender: data.user.user._id,  // user._id bo'lishi kerak
-      text: data.message,
+        // 2. Roomga hostni qo‘shamiz
+        newRoom.players.push({
+          userId: owner._id,
+          username: owner.username, // kerakli nom kelsin
+          isAlive: true,
+          isReady: false,
+        });
+
+        console.log("debug players:", newRoom)
+
+        await newRoom.save(); // host qo‘shilgach saqlaymiz
+
+        // 3. Hostni roomga qo‘shamiz (socket.join)
+        socket.join(newRoom.roomId);
+        socket.data.userId = data.hostId;
+        socket.data.roomId = newRoom.roomId;
+
+        // 4. Emit qilish
+        socket.emit("joined_room", newRoom);
+        io.to(newRoom.roomId).emit("update_players", newRoom.players);
+        io.to(newRoom.roomId).emit("game_players", newRoom);
+        io.to(newRoom.roomId).emit("game_phase", newRoom);
+        await sendRooms();
+        console.log("Room debug:", [newRoom]);
+        console.log("Game:", Game);
+      } catch (err) {
+        console.log(err);
+      }
     });
 
-    // Populate sender so we get the full user object (not just _id)
-    const populatedMessage = await newMessage.populate("sender", "_id username avatar role");
+    socket.on("send_message", async (data) => {
+      try {
+        console.log("message keldi:", data);
 
-    console.log("message saved:", populatedMessage);
+        const newMessage = await GlobalChat.create({
+          sender: data.user.user._id, // user._id bo'lishi kerak
+          text: data.message,
+        });
 
-    io.emit('receive_message', populatedMessage);
-  } catch (err) {
-    console.error("❌ send_message error:", err.message);
-  }
-});
+        // Populate sender so we get the full user object (not just _id)
+        const populatedMessage = await newMessage.populate(
+          "sender",
+          "_id username avatar role"
+        );
+
+        console.log("message saved:", populatedMessage);
+
+        io.emit("receive_message", populatedMessage);
+      } catch (err) {
+        console.error("❌ send_message error:", err.message);
+      }
+    });
 
     socket.on("request_rooms", async () => {
       await sendRooms();
@@ -136,6 +185,21 @@ socket.on('send_message', async (data) => {
           (p) => p.userId.toString() === userId
         );
 
+        const allRooms = await Game.find({ "players.userId": userId });
+
+        // 🛑 Agar u boshqa roomda bo‘lsa va bu room emas bo‘lsa → rad qilamiz
+        const alreadyInOtherRoom = allRooms.some((r) => r.roomId !== roomId);
+
+        if (alreadyInOtherRoom) {
+          socket.emit("notification", {
+            type: "error",
+            message:
+              "Siz boshqa xonada ishtirok etyapsiz. Avval u xonadan chiqing.",
+          });
+          return;
+        }
+
+        // ✅ Agar u allaqachon shu roomda bo‘lsa — socket.join() qilamiz xolos
         if (!alreadyInRoom) {
           gameRoom.players.push({
             userId,

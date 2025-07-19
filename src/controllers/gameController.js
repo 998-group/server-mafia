@@ -129,6 +129,32 @@ export const getAllGames = async (req, res) => {
 
     res.status(200).json({ success: true, count: games.length, games });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// 7. 🚪 Roomdan chiqish
+export const leaveRoom = async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { userId } = req.body;
+
+    const game = await Game.findOne({ roomId });
+    if (!game) return res.status(404).json({ message: "Xona topilmadi" });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "Foydalanuvchi topilmadi" });
+
+    // O'yinchini players massividan olib tashlash
+    game.players = game.players.filter(
+      (p) => p.userId.toString() !== userId
+    );
+
+    // O'zgarishlarni saqlash (middleware ishga tushadi)
+    await game.save();
+
+    res.status(200).json({ message: "Xonadan chiqdingiz", game });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
