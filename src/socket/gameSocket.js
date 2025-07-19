@@ -117,7 +117,7 @@ export const socketHandler = (io) => {
         });
 
         await newRoom.save(); // host qo‘shilgach saqlaymiz
-        
+
         // 3. Hostni roomga qo‘shamiz (socket.join)
         socket.join(newRoom.roomId);
         socket.data.userId = data.hostId;
@@ -169,7 +169,6 @@ export const socketHandler = (io) => {
 
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
-        const user = await User.findById(userId);
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
@@ -177,6 +176,21 @@ export const socketHandler = (io) => {
           (p) => p.userId.toString() === userId
         );
 
+        const allRooms = await Game.find({ "players.userId": userId });
+
+        // 🛑 Agar u boshqa roomda bo‘lsa va bu room emas bo‘lsa → rad qilamiz
+        const alreadyInOtherRoom = allRooms.some((r) => r.roomId !== roomId);
+
+        if (alreadyInOtherRoom) {
+          socket.emit("notification", {
+            type: "error",
+            message:
+              "Siz boshqa xonada ishtirok etyapsiz. Avval u xonadan chiqing.",
+          });
+          return;
+        }
+
+        // ✅ Agar u allaqachon shu roomda bo‘lsa — socket.join() qilamiz xolos
         if (!alreadyInRoom) {
           gameRoom.players.push({
             userId,
