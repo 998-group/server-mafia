@@ -1,8 +1,7 @@
 import Game from "../models/Game.js";
-
+import GlobalChat from "../models/GlobalChat.js";
 export const socketHandler = (io) => {
-  const socketUserMap = new Map();
-  const roomTimers = {};
+  const roomTimers = {}; // { [roomId]: { interval, timeLeft } }
 
   const sendRooms = async () => {
     const rooms = await Game.find({ players: { $not: { $size: 0 } } })
@@ -27,28 +26,26 @@ export const socketHandler = (io) => {
   };
 
   const startRoomTimer = (roomId, durationInSeconds) => {
-    let timeLeft = durationInSeconds;
-  
-    if (roomTimers[roomId]) {
-      clearInterval(roomTimers[roomId]);
-      console.log(`♻️ Oldingi timer tozalandi: ${roomId}`);
+    console.log("⏱️ startRoomTimer():", roomId, durationInSeconds);
+
+    if (roomTimers[roomId]?.interval) {
+      clearInterval(roomTimers[roomId].interval);
     }
-  
-    console.log(`⏳ Timer boshladi | Room: ${roomId} | Duration: ${durationInSeconds}s`);
-  
-    roomTimers[roomId] = setInterval(async () => {
-      io.to(roomId).emit("timer_update", { timeLeft });
-  
-      // DEBUG uchun log
-      if (timeLeft % 10 === 0 || timeLeft <= 5) {
-        console.log(`⏱️ ${roomId}: Qolgan vaqt - ${timeLeft}s`);
-      }
-  
-      if (timeLeft <= 0) {
-        clearInterval(roomTimers[roomId]);
+
+    roomTimers[roomId] = {
+      timeLeft: durationInSeconds,
+      interval: null,
+    };
+
+    roomTimers[roomId].interval = setInterval(async () => {
+      const current = roomTimers[roomId];
+      if (!current) return;
+
+      console.log(`⏲ ${roomId}: ${current.timeLeft}s left`);
+
+      if (current.timeLeft <= 0) {
+        clearInterval(current.interval);
         delete roomTimers[roomId];
-        console.log(`✅ Timer tugadi | Room: ${roomId}`);
-  
         io.to(roomId).emit("timer_end");
   
         try {
@@ -84,19 +81,43 @@ export const socketHandler = (io) => {
         } catch (err) {
           console.error("❌ Auto-phase error:", err.message);
         }
-  
         return;
       }
-  
-      timeLeft--;
+
+      io.to(roomId).emit("timer_update", { timeLeft: current.timeLeft });
+      current.timeLeft--;
     }, 1000);
   };
   
   
 
 
+  const getTimeLeftForRoom = (roomId) => {
+    return roomTimers[roomId]?.timeLeft ?? null;
+  };
+
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
+
+socket.on('send_message', async (data) => {
+  try {
+    console.log("message keldi:", data);
+
+    const newMessage = await GlobalChat.create({
+      sender: data.user.user._id,  // user._id bo'lishi kerak
+      text: data.message,
+    });
+
+    // Populate sender so we get the full user object (not just _id)
+    const populatedMessage = await newMessage.populate("sender", "_id username avatar role");
+
+    console.log("message saved:", populatedMessage);
+
+    io.emit('receive_message', populatedMessage);
+  } catch (err) {
+    console.error("❌ send_message error:", err.message);
+  }
+});
 
     socket.on("request_rooms", async () => {
       await sendRooms();
@@ -104,15 +125,6 @@ export const socketHandler = (io) => {
 
     socket.on("send_message", ({ roomId, message }) => {
       io.to(String(roomId)).emit("receive_message", message);
-    });
-
-    socket.on("join_test", async (roomId) => {
-      try {
-        await socket.join(String(roomId));
-        io.to(roomId).emit("test_message", "Welcome to test room!");
-      } catch (err) {
-        console.error("❌ join_test error:", err);
-      }
     });
 
     socket.on("join_room", async ({ roomId, userId, username }) => {
@@ -135,9 +147,13 @@ export const socketHandler = (io) => {
         }
 
         socket.join(roomId);
-        socketUserMap.set(socket.id, { userId, roomId });
+        socket.data.userId = userId;
+        socket.data.roomId = roomId;
+
         socket.emit("joined_room", gameRoom);
         io.to(roomId).emit("update_players", gameRoom.players);
+        io.to(roomId).emit("game_players", gameRoom);
+        io.to(roomId).emit("game_phase", gameRoom);
       } catch (e) {
         console.error("❌ join_room error:", e.message);
       }
@@ -168,8 +184,9 @@ export const socketHandler = (io) => {
           gameRoom.players.every((p) => p.isReady);
 
         if (allReady) {
-          // 🔰 Role tayinlash
-          const shuffled = [...gameRoom.players].sort(() => Math.random() - 0.5);
+          const shuffled = [...gameRoom.players].sort(
+            () => Math.random() - 0.5
+          );
           const roles = generateRoles(shuffled.length);
           shuffled.forEach((player, i) => {
             player.gameRole = roles[i];
@@ -180,6 +197,8 @@ export const socketHandler = (io) => {
 
           io.to(roomId).emit("start_game");
           io.to(roomId).emit("game_players", gameRoom);
+          io.to(roomId).emit("game_phase", gameRoom);
+
           startRoomTimer(roomId, 60);
         }
       } catch (e) {
@@ -205,7 +224,7 @@ export const socketHandler = (io) => {
         } else if (gameRoom.phase === "day") {
           gameRoom.phase = "ended";
           gameRoom.endedAt = new Date();
-          startRoomTimer(roomId, 180);
+          startRoomTimer(roomId, 10);
         } else if (gameRoom.phase === "ended") {
           gameRoom.phase = "waiting";
           gameRoom.winner = null;
@@ -219,6 +238,7 @@ export const socketHandler = (io) => {
 
         await gameRoom.save();
         io.to(roomId).emit("game_phase", gameRoom);
+        io.to(roomId).emit("game_players", gameRoom);
       } catch (e) {
         console.error("❌ game_phase error:", e.message);
       }
@@ -262,7 +282,7 @@ export const socketHandler = (io) => {
           io.to(roomId).emit("room_closed");
 
           if (roomTimers[roomId]) {
-            clearInterval(roomTimers[roomId]);
+            clearInterval(roomTimers[roomId].interval);
             delete roomTimers[roomId];
           }
         } else {
@@ -271,7 +291,6 @@ export const socketHandler = (io) => {
         }
 
         socket.leave(roomId);
-        socketUserMap.delete(socket.id);
         await sendRooms();
       } catch (e) {
         console.error("❌ leave_room error:", e);
@@ -279,44 +298,50 @@ export const socketHandler = (io) => {
     });
 
     socket.on("disconnect", async () => {
-      const session = socketUserMap.get(socket.id);
-      if (!session) return;
-
-      const { userId, roomId } = session;
+      const { userId, roomId } = socket.data || {};
+      if (!userId || !roomId) return;
 
       try {
-        const gameRoom = await Game.findOne({ roomId });
-        if (!gameRoom) return;
+        await Game.updateOne({ roomId }, { $pull: { players: { userId } } });
+        const updatedRoom = await Game.findOne({ roomId });
 
-        gameRoom.players = gameRoom.players.filter(
-          (p) => p.userId.toString() !== userId
-        );
-
-        if (gameRoom.players.length === 0) {
+        if (updatedRoom?.players.length === 0) {
           await Game.deleteOne({ roomId });
           io.to(roomId).emit("room_closed");
 
           if (roomTimers[roomId]) {
-            clearInterval(roomTimers[roomId]);
+            clearInterval(roomTimers[roomId].interval);
             delete roomTimers[roomId];
           }
         } else {
-          await gameRoom.save();
-          io.to(roomId).emit("update_players", gameRoom.players);
+          io.to(roomId).emit("update_players", updatedRoom.players);
         }
 
         socket.leave(roomId);
-        socketUserMap.delete(socket.id);
         await sendRooms();
       } catch (err) {
-        console.error("❌ disconnect error:", err);
+        console.error("❌ disconnect error:", err.message);
       }
     });
 
-    socket.on("get_players", async (data) => {
-      const gameRoom = await Game.findOne({ roomId: data });
+    socket.on("get_players", async (roomId) => {
+      const gameRoom = await Game.findOne({ roomId });
       if (gameRoom) {
         socket.emit("update_players", gameRoom.players);
+        socket.emit("game_players", gameRoom);
+        socket.emit("game_phase", gameRoom);
+
+        const timeLeft = getTimeLeftForRoom(roomId);
+
+        if (timeLeft !== null) {
+          socket.emit("timer_update", { timeLeft });
+
+          const timerObj = roomTimers[roomId];
+          if (!timerObj || typeof timerObj.interval !== "object") {
+            console.log("⏳ Timer is being restarted after reload:", roomId);
+            startRoomTimer(roomId, timeLeft);
+          }
+        }
       }
     });
   });
