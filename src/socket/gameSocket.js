@@ -98,8 +98,10 @@ export const socketHandler = (io) => {
     console.log(`🔌 Connected: ${socket.id}`);
 
     socket.on("create_room", async (data) => {
-      console.log("data:", data);
-      try {
+      console.log("data users:", data);
+      try { 
+        const owner = await User.findById(data.hostId)
+        console.log("owner:", owner)
         const newRoom = await Game.create({
           roomId: uniqId(),
           roomName: data.roomName,
@@ -110,11 +112,13 @@ export const socketHandler = (io) => {
 
         // 2. Roomga hostni qo‘shamiz
         newRoom.players.push({
-          userId: data.hostId,
-          username: data.hostName, // kerakli nom kelsin
+          userId: owner._id,
+          username: owner.username, // kerakli nom kelsin
           isAlive: true,
           isReady: false,
         });
+
+        console.log("debug players:", newRoom)
 
         await newRoom.save(); // host qo‘shilgach saqlaymiz
 
@@ -129,7 +133,7 @@ export const socketHandler = (io) => {
         io.to(newRoom.roomId).emit("game_players", newRoom);
         io.to(newRoom.roomId).emit("game_phase", newRoom);
         await sendRooms();
-        console.log("Room debug", [newRoom]);
+        console.log("Room debug:", [newRoom]);
         console.log("Game:", Game);
       } catch (err) {
         console.log(err);
