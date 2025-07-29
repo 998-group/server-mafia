@@ -121,6 +121,7 @@ export const socketHandler = (io) => {
           username: owner.username, // kerakli nom kelsin
           isAlive: true,
           isReady: false,
+          voice: [],
         });
 
         console.log("debug players:", newRoom)
@@ -175,7 +176,10 @@ export const socketHandler = (io) => {
     socket.on("send_message", ({ roomId, message }) => {
       io.to(String(roomId)).emit("receive_message", message);
     });
-
+    socket.on("add_voice", async (data) => {
+      console.log("add_voice:", data);
+      
+    });
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
@@ -206,7 +210,9 @@ export const socketHandler = (io) => {
             username,
             isAlive: true,
             isReady: false,
+            voice: []
           });
+          
           await gameRoom.save();
         }
 
