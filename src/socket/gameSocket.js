@@ -99,9 +99,9 @@ export const socketHandler = (io) => {
 
     socket.on("create_room", async (data) => {
       console.log("data users:", data);
-      try { 
-        const owner = await User.findById(data.hostId)
-        console.log("owner:", owner)
+      try {
+        const owner = await User.findById(data.hostId);
+        console.log("owner:", owner);
         const newRoom = await Game.create({
           roomId: uniqId(),
           roomName: data.roomName,
@@ -119,7 +119,7 @@ export const socketHandler = (io) => {
           voice: [],
         });
 
-        console.log("debug players:", newRoom)
+        console.log("debug players:", newRoom);
 
         await newRoom.save(); // host qo‘shilgach saqlaymiz
 
@@ -171,10 +171,7 @@ export const socketHandler = (io) => {
     socket.on("send_message", ({ roomId, message }) => {
       io.to(String(roomId)).emit("receive_message", message);
     });
-    socket.on("add_voice", async (data) => {
-      console.log("add_voice:", data);
-      
-    });
+
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
@@ -205,9 +202,9 @@ export const socketHandler = (io) => {
             username,
             isAlive: true,
             isReady: false,
-            voice: []
+            voice: [],
           });
-          
+
           await gameRoom.save();
         }
 
@@ -383,6 +380,111 @@ export const socketHandler = (io) => {
             startRoomTimer(roomId, timeLeft);
           }
         }
+      }
+    });
+
+    socket.on("vote_player", async ({ roomId, voterId, targetUserId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom) return;
+
+        const voter = gameRoom.players.find(
+          (p) => p.userId.toString() === voterId
+        );
+        if (!voter || !voter.isAlive) return;
+
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetUserId
+        );
+        if (!target || !target.isAlive) return;
+
+        target.votes = (target.votes || 0) + 1;
+
+        await gameRoom.save();
+        io.to(roomId).emit("player_voted", {
+          targetUserId,
+          votes: target.votes,
+        });
+      } catch (e) {
+        console.error("❌ vote_player error:", e.message);
+      }
+    });
+
+    socket.on("check_player", async ({ roomId, checkerId, targetUserId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom) return;
+
+        const checker = gameRoom.players.find(
+          (p) => p.userId.toString() === checkerId
+        );
+        if (!checker || checker.gameRole !== "detective") return;
+
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetUserId
+        );
+        if (!target) return;
+
+        // Only show role to the checker (not to everyone)
+        socket.emit("check_result", {
+          targetUserId,
+          role: target.gameRole,
+        });
+      } catch (e) {
+        console.error("❌ check_player error:", e.message);
+      }
+    });
+
+    // 💉 Doctor heals a player
+    socket.on("take_health", async ({ roomId, doctorId, targetUserId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom) return;
+
+        const doctor = gameRoom.players.find(
+          (p) => p.userId.toString() === doctorId
+        );
+        if (!doctor || doctor.gameRole !== "doctor") return;
+
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetUserId
+        );
+        if (!target) return;
+
+        target.isHealed = true;
+        await gameRoom.save();
+      } catch (e) {
+        console.error("❌ take_health error:", e.message);
+      }
+    });
+
+    // 🔪 Mafia kills a player
+    socket.on("kill_player", async ({ roomId, killerId, targetUserId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom) return;
+
+        const killer = gameRoom.players.find(
+          (p) => p.userId.toString() === killerId
+        );
+        if (!killer || killer.gameRole !== "mafia") return;
+
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetUserId
+        );
+        if (!target || !target.isAlive) return;
+
+        // Check if healed
+        if (target.isHealed) {
+          target.isHealed = false; // Reset healing for next night
+        } else {
+          target.isAlive = false;
+        }
+
+        await gameRoom.save();
+        io.to(roomId).emit("update_players", gameRoom.players);
+      } catch (e) {
+        console.error("❌ kill_player error:", e.message);
       }
     });
   });
