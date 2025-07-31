@@ -168,8 +168,9 @@ export const socketHandler = (io) => {
       await sendRooms();
     });
 
-    socket.on("send_message", ({ roomId, message }) => {
-      io.to(String(roomId)).emit("receive_message", message);
+    socket.on("game_chat", ({ roomId, message }) => {
+      console.log("message keldi:", message);
+      io.to(String(roomId)).emit("receive_chat_message", message);
     });
 
     socket.on("join_room", async ({ roomId, userId, username }) => {
