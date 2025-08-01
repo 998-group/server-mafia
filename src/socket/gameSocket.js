@@ -141,28 +141,58 @@ export const socketHandler = (io) => {
       }
     });
 
-    socket.on("send_message", async (data) => {
-      try {
-        console.log("message keldi:", data);
+  // Backend (e.g., server.js or chat.js)
+  socket.on("send_message", async ({ data, global }) => {
+    try {
+      console.log("message keldi:", data);
+      const senderId = data.user?.user?._id;
+      if (!senderId) throw new Error("Invalid sender ID");
 
-        const newMessage = await GlobalChat.create({
-          sender: data.user.user._id, // user._id bo'lishi kerak
-          text: data.message,
-        });
+      const newMessage = await GlobalChat.create({
+        sender: senderId,
+        text: data.message,
+        global,
+      });
 
-        // Populate sender so we get the full user object (not just _id)
-        const populatedMessage = await newMessage.populate(
-          "sender",
-          "_id username avatar role"
-        );
+      const populated = await newMessage.populate(
+        "sender",
+        "_id username avatar role"
+      );
 
-        console.log("message saved:", populatedMessage);
+      console.log("message saved:", populated);
 
-        io.emit("receive_message", populatedMessage);
-      } catch (err) {
-        console.error("❌ send_message error:", err.message);
+      if (global) {
+        io.emit("receive_message", populated);
+      } else if (data.roomId) {
+        io.to(data.roomId).emit("receive_message", populated);
+      } else {
+        socket.emit("receive_message", populated);
       }
-    });
+    } catch (err) {
+      console.error("❌ send_message error:", err.message);
+      socket.emit("error", {
+        message: "Failed to send message",
+        error: err.message,
+      });
+    }
+  });
+
+  // FETCH_MESSAGES event
+  socket.on("fetch_messages", async ({ global }) => {
+    try {
+      const msgs = await GlobalChat.find({ global })
+        .populate("sender", "_id username avatar role")
+        .sort({ createdAt: 1 })
+        .limit(50);
+      socket.emit("initial_messages", msgs);
+    } catch (err) {
+      console.error("❌ fetch_messages error:", err.message);
+      socket.emit("error", {
+        message: "Failed to fetch messages",
+        error: err.message,
+      });
+    }
+  });
 
     socket.on("request_rooms", async () => {
       await sendRooms();
