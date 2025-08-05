@@ -3,7 +3,7 @@ import GlobalChat from "../models/GlobalChat.js";
 import User from "../models/User.js";
 import uniqId from "uniqid";
 
-const games = {}
+const games = {};
 export const socketHandler = (io) => {
   const roomTimers = {};
 
@@ -30,7 +30,13 @@ export const socketHandler = (io) => {
   };
 
   const startRoomTimer = (roomId, durationInSeconds) => {
-    console.log("⏱️ startRoomTimer():", roomId, durationInSeconds);
+    console.log(
+      "⏱️ Timer started for",
+      roomId,
+      "for",
+      durationInSeconds,
+      "seconds"
+    );
 
     if (roomTimers[roomId]?.interval) {
       clearInterval(roomTimers[roomId].interval);
@@ -42,59 +48,72 @@ export const socketHandler = (io) => {
     };
 
     roomTimers[roomId].interval = setInterval(async () => {
-      const current = roomTimers[roomId];
-      if (!current) return;
+      const timer = roomTimers[roomId];
+      if (!timer) return;
 
-      console.log(`⏲ ${roomId}: ${current.timeLeft}s left`);
-
-      if (current.timeLeft <= 0) {
-        clearInterval(current.interval);
+      if (timer.timeLeft <= 0) {
+        clearInterval(timer.interval);
         delete roomTimers[roomId];
+
         io.to(roomId).emit("timer_end");
 
         try {
           const gameRoom = await Game.findOne({ roomId });
           if (!gameRoom) return;
 
-          console.log(`🔁 Faza almashtirilmoqda | Hozirgi faza: ${gameRoom.phase}`);
-
-          if (gameRoom.phase === "started") {
-            gameRoom.phase = "night";
-            startRoomTimer(roomId, 180);
-          } else if (gameRoom.phase === "night") {
-            gameRoom.phase = "day";
-            startRoomTimer(roomId, 180);
-          } else if (gameRoom.phase === "day") {
-            gameRoom.phase = "ended";
-            gameRoom.endedAt = new Date();
-            startRoomTimer(roomId, 10);
-          } else if (gameRoom.phase === "ended") {
-            gameRoom.phase = "waiting";
-            gameRoom.winner = null;
-            gameRoom.currentTurn = 0;
-            gameRoom.players.forEach((p) => {
-              p.isReady = false;
-              p.isAlive = true;
-              p.gameRole = null;
-            });
+          let nextPhase = null;
+          switch (gameRoom.phase) {
+            case "started":
+              nextPhase = "night";
+              break;
+            case "night":
+              nextPhase = "day";
+              break;
+            case "day":
+              nextPhase = "ended";
+              gameRoom.endedAt = new Date();
+              break;
+            case "ended":
+              nextPhase = "waiting";
+              gameRoom.winner = null;
+              gameRoom.currentTurn = 0;
+              gameRoom.players.forEach((p) => {
+                p.isReady = false;
+                p.isAlive = true;
+                p.gameRole = null;
+              });
+              break;
+            default:
+              console.warn("⚠️ Unknown phase:", gameRoom.phase);
+              return;
           }
 
+          gameRoom.phase = nextPhase;
           await gameRoom.save();
+
+          // emit
           io.to(roomId).emit("game_phase", gameRoom);
           io.to(roomId).emit("game_players", gameRoom);
+
+          // 🔁 Recursive timer
+          if (nextPhase === "night" || nextPhase === "day") {
+            startRoomTimer(roomId, 180);
+          } else if (nextPhase === "ended") {
+            startRoomTimer(roomId, 10);
+          }
+
+          console.log(`✅ Phase changed to ${nextPhase} for room ${roomId}`);
         } catch (err) {
-          console.error("❌ Auto-phase error:", err.message);
+          console.error("❌ Timer phase switch error:", err.message);
         }
+
         return;
       }
 
-      io.to(roomId).emit("timer_update", { timeLeft: current.timeLeft });
-      current.timeLeft--;
+      io.to(roomId).emit("timer_update", { timeLeft: timer.timeLeft });
+      timer.timeLeft--;
     }, 1000);
   };
-
-
-
 
   const getTimeLeftForRoom = (roomId) => {
     return roomTimers[roomId]?.timeLeft ?? null;
@@ -107,16 +126,16 @@ export const socketHandler = (io) => {
     socket.on("mafia_kill", ({ roomId, killerId, targetId }) => {
       console.log({ roomId, killerId, targetId });
       const game = games[roomId]; // roomId endi string, OK!
-      console.log("game", game)
+      console.log("game", game);
       console.log("games object:", games);
       console.log("roomId in request:", roomId);
 
       if (!game) return;
-      const killer = game.players.find(p => p._id.toString() === killerId);
-      const target = game.players.find(p => p._id.toString() === targetId);
+      const killer = game.players.find((p) => p._id.toString() === killerId);
+      const target = game.players.find((p) => p._id.toString() === targetId);
 
-      console.log("killer", killer)
-      console.log("target", target)
+      console.log("killer", killer);
+      console.log("target", target);
       // ❗ Tekshiruvlar
       if (!killer || !target) return;
       if (killer.role !== "mafia") return;
@@ -143,47 +162,45 @@ export const socketHandler = (io) => {
     });
 
     socket.on("doctor_heal", ({ roomId, doctorId, targetId }) => {
-      console.log({ roomId, doctorId, targetId })
+      console.log({ roomId, doctorId, targetId });
       const game = games[roomId];
-      console.log("game", game)
+      console.log("game", game);
       if (!game) return;
-    
-      const doctor = game.players.find(p => p._id.toString() === doctorId);
-      const target = game.players.find(p => p._id.toString() === targetId);
-      console.log("killer", doctor)
-      console.log("target", target)
+
+      const doctor = game.players.find((p) => p._id.toString() === doctorId);
+      const target = game.players.find((p) => p._id.toString() === targetId);
+      console.log("killer", doctor);
+      console.log("target", target);
       if (!doctor || !target) return;
       if (doctor.role !== "doctor") return;
       if (!doctor.isAlive) return;
-    
+
       // faqat 1 marta davolay oladi
       if (game.hasDoctorHealed) {
         socket.emit("error_message", "Siz allaqachon davolagansiz.");
         return;
       }
-    
+
       // targetni saqlab qo'yamiz
       target.isAlive = true;
       game.savedPlayerId = target._id.toString();
       game.hasDoctorHealed = true;
-    
+
       io.to(roomId).emit("doctor_healed", {
         doctorId,
         targetId,
-        message: `👨‍⚕️ Doctor kimnidir davoladi!`
+        message: `👨‍⚕️ Doctor kimnidir davoladi!`,
       });
-    
+
       console.log(`Doctor (${doctor.username}) healed ${target.username}`);
     });
-    
-
 
     socket.on("create_room", async (data) => {
       console.log("data users:", data);
 
       try {
-        const owner = await User.findById(data.hostId)
-        console.log("owner:", owner)
+        const owner = await User.findById(data.hostId);
+        console.log("owner:", owner);
         const newRoom = await Game.create({
           roomId: uniqId(),
           roomName: data.roomName,
@@ -223,58 +240,58 @@ export const socketHandler = (io) => {
       }
     });
 
-  // Backend (e.g., server.js or chat.js)
-  socket.on("send_message", async ({ data, global }) => {
-    try {
-      console.log("message keldi:", data);
-      const senderId = data.user?.user?._id;
-      if (!senderId) throw new Error("Invalid sender ID");
+    // Backend (e.g., server.js or chat.js)
+    socket.on("send_message", async ({ data, global }) => {
+      try {
+        console.log("message keldi:", data);
+        const senderId = data.user?.user?._id;
+        if (!senderId) throw new Error("Invalid sender ID");
 
-      const newMessage = await GlobalChat.create({
-        sender: senderId,
-        text: data.message,
-        global,
-      });
+        const newMessage = await GlobalChat.create({
+          sender: senderId,
+          text: data.message,
+          global,
+        });
 
-      const populated = await newMessage.populate(
-        "sender",
-        "_id username avatar role"
-      );
+        const populated = await newMessage.populate(
+          "sender",
+          "_id username avatar role"
+        );
 
-      console.log("message saved:", populated);
+        console.log("message saved:", populated);
 
-      if (global) {
-        io.emit("receive_message", populated);
-      } else if (data.roomId) {
-        io.to(data.roomId).emit("receive_message", populated);
-      } else {
-        socket.emit("receive_message", populated);
+        if (global) {
+          io.emit("receive_message", populated);
+        } else if (data.roomId) {
+          io.to(data.roomId).emit("receive_message", populated);
+        } else {
+          socket.emit("receive_message", populated);
+        }
+      } catch (err) {
+        console.error("❌ send_message error:", err.message);
+        socket.emit("error", {
+          message: "Failed to send message",
+          error: err.message,
+        });
       }
-    } catch (err) {
-      console.error("❌ send_message error:", err.message);
-      socket.emit("error", {
-        message: "Failed to send message",
-        error: err.message,
-      });
-    }
-  });
+    });
 
-  // FETCH_MESSAGES event
-  socket.on("fetch_messages", async ({ global }) => {
-    try {
-      const msgs = await GlobalChat.find({ global })
-        .populate("sender", "_id username avatar role")
-        .sort({ createdAt: 1 })
-        .limit(50);
-      socket.emit("initial_messages", msgs);
-    } catch (err) {
-      console.error("❌ fetch_messages error:", err.message);
-      socket.emit("error", {
-        message: "Failed to fetch messages",
-        error: err.message,
-      });
-    }
-  });
+    // FETCH_MESSAGES event
+    socket.on("fetch_messages", async ({ global }) => {
+      try {
+        const msgs = await GlobalChat.find({ global })
+          .populate("sender", "_id username avatar role")
+          .sort({ createdAt: 1 })
+          .limit(50);
+        socket.emit("initial_messages", msgs);
+      } catch (err) {
+        console.error("❌ fetch_messages error:", err.message);
+        socket.emit("error", {
+          message: "Failed to fetch messages",
+          error: err.message,
+        });
+      }
+    });
 
     socket.on("request_rooms", async () => {
       await sendRooms();
@@ -285,7 +302,6 @@ export const socketHandler = (io) => {
     });
     socket.on("add_voice", async (data) => {
       console.log("add_voice:", data);
-
     });
 
     socket.on("join_room", async ({ roomId, userId, username }) => {
@@ -373,20 +389,20 @@ export const socketHandler = (io) => {
           gameRoom.phase = "started";
           await gameRoom.save();
           games[roomId] = {
-            players: shuffled.map(p => ({
-              _id: p.userId.toString(),     // ❗ Bu yerni ObjectId dan stringga aylantiring
+            players: shuffled.map((p) => ({
+              _id: p.userId.toString(), // ❗ Bu yerni ObjectId dan stringga aylantiring
               username: p.username,
               role: p.gameRole,
               isAlive: true,
             })),
             hasMafiaKilled: false,
-            phase: "night"
+            phase: "night",
           };
           io.to(roomId).emit("start_game");
           io.to(roomId).emit("game_players", gameRoom);
           io.to(roomId).emit("game_phase", gameRoom);
 
-          startRoomTimer(roomId, 60);
+          startRoomTimer(roomId, 10);
         }
       } catch (e) {
         console.error("❌ ready error:", e);
@@ -442,7 +458,11 @@ export const socketHandler = (io) => {
             timeLeft = Math.max(0, roomTimer._idleTimeout / 1000 - elapsed);
           }
 
-          console.log(`🔎 get_game_status: Room ${roomId} | Phase: ${gameRoom.phase} | TimeLeft: ${Math.floor(timeLeft)}s`);
+          console.log(
+            `🔎 get_game_status: Room ${roomId} | Phase: ${
+              gameRoom.phase
+            } | TimeLeft: ${Math.floor(timeLeft)}s`
+          );
 
           socket.emit("game_status", {
             timeLeft: Math.floor(timeLeft),
@@ -453,7 +473,6 @@ export const socketHandler = (io) => {
         console.error("❌ get_game_status error:", err.message);
       }
     });
-
 
     socket.on("leave_room", async ({ roomId, userId }) => {
       try {
