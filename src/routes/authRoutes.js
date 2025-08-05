@@ -89,6 +89,6 @@ router.post('/login', login);
  *                   username:
  *                     type: string
  */
-router.get('/users/all', verifyToken, getAllUsers); // 🔒 Token kerak
+router.get('/users/all', getAllUsers); // 🔒 Token kerak
 
 export default router;
