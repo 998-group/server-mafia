@@ -420,10 +420,10 @@ export const socketHandler = (io) => {
 
         if (gameRoom.phase === "started") {
           gameRoom.phase = "night";
-          startRoomTimer(roomId, 180);
+          startRoomTimer(roomId, 30);
         } else if (gameRoom.phase === "night") {
           gameRoom.phase = "day";
-          startRoomTimer(roomId, 180);
+          startRoomTimer(roomId, 60);
         } else if (gameRoom.phase === "day") {
           gameRoom.phase = "ended";
           gameRoom.endedAt = new Date();
