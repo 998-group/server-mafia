@@ -72,7 +72,7 @@ export const socketHandler = (io) => {
             gameRoom.players.forEach((p) => {
               p.isReady = false;
               p.isAlive = true;
-              p.gameRole = null;
+              // Не сбрасываем роли здесь
             });
           }
 
@@ -98,44 +98,31 @@ export const socketHandler = (io) => {
     console.log(`🔌 Connected: ${socket.id}`);
 
     socket.on("create_room", async (data) => {
-      console.log("data users:", data);
       try { 
-        const owner = await User.findById(data.hostId)
-        console.log("owner:", owner)
+        const owner = await User.findById(data.hostId);
         const newRoom = await Game.create({
           roomId: uniqId(),
           roomName: data.roomName,
-          players: [],
+          players: [{
+            userId: owner._id,
+            username: owner.username,
+            isAlive: true,
+            isReady: false,
+            voice: [],
+          }],
           hostId: data.hostId,
           phase: "waiting",
         });
 
-        // 2. Roomga hostni qo‘shamiz
-        newRoom.players.push({
-          userId: owner._id,
-          username: owner.username, // kerakli nom kelsin
-          isAlive: true,
-          isReady: false,
-          voice: [],
-        });
-
-        console.log("debug players:", newRoom)
-
-        await newRoom.save(); // host qo‘shilgach saqlaymiz
-
-        // 3. Hostni roomga qo‘shamiz (socket.join)
         socket.join(newRoom.roomId);
         socket.data.userId = data.hostId;
         socket.data.roomId = newRoom.roomId;
 
-        // 4. Emit qilish
         socket.emit("joined_room", newRoom);
         io.to(newRoom.roomId).emit("update_players", newRoom.players);
         io.to(newRoom.roomId).emit("game_players", newRoom);
         io.to(newRoom.roomId).emit("game_phase", newRoom);
         await sendRooms();
-        console.log("Room debug:", [newRoom]);
-        console.log("Game:", Game);
       } catch (err) {
         console.log(err);
       }
@@ -143,20 +130,15 @@ export const socketHandler = (io) => {
 
     socket.on("send_message", async (data) => {
       try {
-        console.log("message keldi:", data);
-
         const newMessage = await GlobalChat.create({
-          sender: data.user.user._id, // user._id bo'lishi kerak
+          sender: data.user.user._id,
           text: data.message,
         });
 
-        // Populate sender so we get the full user object (not just _id)
         const populatedMessage = await newMessage.populate(
           "sender",
           "_id username avatar role"
         );
-
-        console.log("message saved:", populatedMessage);
 
         io.emit("receive_message", populatedMessage);
       } catch (err) {
@@ -168,13 +150,6 @@ export const socketHandler = (io) => {
       await sendRooms();
     });
 
-    socket.on("send_message", ({ roomId, message }) => {
-      io.to(String(roomId)).emit("receive_message", message);
-    });
-    socket.on("add_voice", async (data) => {
-      console.log("add_voice:", data);
-      
-    });
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
@@ -185,20 +160,16 @@ export const socketHandler = (io) => {
         );
 
         const allRooms = await Game.find({ "players.userId": userId });
-
-        // 🛑 Agar u boshqa roomda bo‘lsa va bu room emas bo‘lsa → rad qilamiz
         const alreadyInOtherRoom = allRooms.some((r) => r.roomId !== roomId);
 
         if (alreadyInOtherRoom) {
           socket.emit("notification", {
             type: "error",
-            message:
-              "Siz boshqa xonada ishtirok etyapsiz. Avval u xonadan chiqing.",
+            message: "Siz boshqa xonada ishtirok etyapsiz. Avval u xonadan chiqing.",
           });
           return;
         }
 
-        // ✅ Agar u allaqachon shu roomda bo‘lsa — socket.join() qilamiz xolos
         if (!alreadyInRoom) {
           gameRoom.players.push({
             userId,
@@ -207,7 +178,6 @@ export const socketHandler = (io) => {
             isReady: false,
             voice: []
           });
-          
           await gameRoom.save();
         }
 
@@ -248,7 +218,8 @@ export const socketHandler = (io) => {
           gameRoom.players.length >= 2 &&
           gameRoom.players.every((p) => p.isReady);
 
-        if (allReady) {
+        if (allReady && gameRoom.phase === "waiting") {
+          // Назначаем роли только если игра еще не начата
           const shuffled = [...gameRoom.players].sort(
             () => Math.random() - 0.5
           );
@@ -271,15 +242,12 @@ export const socketHandler = (io) => {
       }
     });
 
-    socket.on("start_timer", ({ roomId, duration }) => {
-      startRoomTimer(roomId, duration);
-    });
-
     socket.on("game_phase", async ({ roomId }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) return;
 
+        // Меняем фазу без изменения ролей
         if (gameRoom.phase === "started") {
           gameRoom.phase = "night";
           startRoomTimer(roomId, 180);
@@ -297,7 +265,7 @@ export const socketHandler = (io) => {
           gameRoom.players.forEach((p) => {
             p.isReady = false;
             p.isAlive = true;
-            p.gameRole = null;
+            // Не сбрасываем роли здесь
           });
         }
 
@@ -308,7 +276,7 @@ export const socketHandler = (io) => {
         console.error("❌ game_phase error:", e.message);
       }
     });
-
+    
     socket.on("leave_room", async ({ roomId, userId }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
