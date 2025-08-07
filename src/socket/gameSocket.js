@@ -297,8 +297,8 @@ export const socketHandler = (io) => {
       await sendRooms();
     });
 
-    socket.on("send_message", ({ roomId, message }) => {
-      io.to(String(roomId)).emit("receive_message", message);
+    socket.on("send_room_message", ({ roomId, message }) => {
+      io.to(String(roomId)).emit("receive_room_message", message);
     });
     socket.on("add_voice", async (data) => {
       console.log("add_voice:", data);
