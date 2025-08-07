@@ -1,8 +1,21 @@
-
 import Game from "../models/Game.js";
 import GlobalChat from "../models/GlobalChat.js";
 import User from "../models/User.js";
 import uniqId from "uniqid";
+
+// Configuration constants
+const PHASE_DURATIONS = {
+  night: 180, // 3 minutes
+  day: 180, // 3 minutes
+  ended: 10, // 10 seconds
+  waiting: null, // No timer for waiting phase
+};
+
+const ROLE_DISTRIBUTION = {
+  mafia: (playerCount) => Math.max(1, Math.floor(playerCount / 4)),
+  doctor: (playerCount) => (playerCount >= 3 ? 1 : 0),
+  detective: (playerCount) => (playerCount >= 6 ? 1 : 0),
+};
 
 export const socketHandler = (io) => {
   const roomTimers = {};
@@ -20,9 +33,9 @@ export const socketHandler = (io) => {
 
   const generateRoles = (playerCount) => {
     const roles = [];
-    const mafiaCount = Math.max(1, Math.floor(playerCount / 4));
-    const doctorCount = playerCount >= 5 ? 1 : 0;
-    const detectiveCount = playerCount >= 6 ? 1 : 0;
+    const mafiaCount = ROLE_DISTRIBUTION.mafia(playerCount);
+    const doctorCount = ROLE_DISTRIBUTION.doctor(playerCount);
+    const detectiveCount = ROLE_DISTRIBUTION.detective(playerCount);
 
     for (let i = 0; i < mafiaCount; i++) roles.push("mafia");
     if (doctorCount) roles.push("doctor");
@@ -32,8 +45,10 @@ export const socketHandler = (io) => {
     return roles.sort(() => Math.random() - 0.5);
   };
 
-  const startRoomTimer = (roomId, durationInSeconds) => {
-    console.log("⏱️ startRoomTimer():", roomId, durationInSeconds);
+  const startRoomTimer = async (roomId, durationInSeconds) => {
+    if (!durationInSeconds) return;
+
+    console.log(`⏱️ Timer started for ${roomId} for ${durationInSeconds} seconds`);
 
     if (roomTimers[roomId]?.interval) {
       clearInterval(roomTimers[roomId].interval);
@@ -45,52 +60,69 @@ export const socketHandler = (io) => {
     };
 
     roomTimers[roomId].interval = setInterval(async () => {
-      const current = roomTimers[roomId];
-      if (!current) return;
+      const timer = roomTimers[roomId];
+      if (!timer) return;
 
-      console.log(`⏲ ${roomId}: ${current.timeLeft}s left`);
-
-      if (current.timeLeft <= 0) {
-        clearInterval(current.interval);
+      if (timer.timeLeft <= 0) {
+        clearInterval(timer.interval);
         delete roomTimers[roomId];
+
         io.to(roomId).emit("timer_end");
 
         try {
           const gameRoom = await Game.findOne({ roomId });
           if (!gameRoom) return;
 
-          if (gameRoom.phase === "started") {
-            gameRoom.phase = "night";
-            startRoomTimer(roomId, 180);
-          } else if (gameRoom.phase === "night") {
-            gameRoom.phase = "day";
-            startRoomTimer(roomId, 180);
-          } else if (gameRoom.phase === "day") {
-            gameRoom.phase = "ended";
-            gameRoom.endedAt = new Date();
-            startRoomTimer(roomId, 10);
-          } else if (gameRoom.phase === "ended") {
-            gameRoom.phase = "waiting";
-            gameRoom.winner = null;
-            gameRoom.currentTurn = 0;
-            gameRoom.players.forEach((p) => {
-              p.isReady = false;
-              p.isAlive = true;
-              p.gameRole = null;
-            });
+          let nextPhase = null;
+          switch (gameRoom.phase) {
+            case "started":
+              nextPhase = "night";
+              break;
+            case "night":
+              nextPhase = "day";
+              break;
+            case "day":
+              nextPhase = "ended";
+              gameRoom.endedAt = new Date();
+              break;
+            case "ended":
+              nextPhase = "waiting";
+              gameRoom.winner = null;
+              gameRoom.currentTurn = 0;
+              gameRoom.players.forEach((p) => {
+                p.isReady = false;
+                p.isAlive = true;
+                p.gameRole = null;
+                p.votes = 0;
+                p.isHealed = false;
+              });
+              break;
+            default:
+              console.warn(`⚠️ Unknown phase: ${gameRoom.phase}`);
+              return;
           }
 
+          gameRoom.phase = nextPhase;
           await gameRoom.save();
+
           io.to(roomId).emit("game_phase", gameRoom);
-          io.to(roomId).emit("game_players", gameRoom);
+          io.to(roomId).emit("update_players", gameRoom.players);
+
+          if (PHASE_DURATIONS[nextPhase]) {
+            startRoomTimer(roomId, PHASE_DURATIONS[nextPhase]);
+          }
+
+          console.log(`✅ Phase changed to ${nextPhase} for room ${roomId}`);
         } catch (err) {
-          console.error("❌ Auto-phase error:", err.message);
+          console.error("❌ Timer phase switch error:", err.message);
+          io.to(roomId).emit("error", { message: "Timer phase switch failed" });
         }
+
         return;
       }
 
-      io.to(roomId).emit("timer_update", { timeLeft: current.timeLeft });
-      current.timeLeft--;
+      io.to(roomId).emit("timer_update", { timeLeft: timer.timeLeft });
+      timer.timeLeft--;
     }, 1000);
   };
 
@@ -100,12 +132,120 @@ export const socketHandler = (io) => {
 
   io.on("connection", (socket) => {
     console.log(`🔌 Connected: ${socket.id}`);
+    socket.emit("your_socket_id", socket.id);
+
+    socket.on("mafia_kill", async ({ roomId, killerId, targetId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom || gameRoom.phase !== "night") {
+          socket.emit("error", { message: "Invalid game or not night phase" });
+          return;
+        }
+
+        const killer = gameRoom.players.find(
+          (p) => p.userId.toString() === killerId
+        );
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetId
+        );
+
+        if (!killer || !target) {
+          socket.emit("error", { message: "Invalid killer or target" });
+          return;
+        }
+
+        if (killer.gameRole !== "mafia" || !killer.isAlive) {
+          socket.emit("error", { message: "Killer must be an alive mafia" });
+          return;
+        }
+
+        if (gameRoom.hasMafiaKilled) {
+          socket.emit("error", { message: "Mafia has already killed this night" });
+          return;
+        }
+
+        if (target.isHealed) {
+          target.isHealed = false;
+        } else {
+          target.isAlive = false;
+        }
+
+        gameRoom.hasMafiaKilled = true;
+        await gameRoom.save();
+
+        io.to(roomId).emit("player_killed", {
+          killerId,
+          targetId,
+          targetUsername: target.username,
+        });
+
+        console.log(`💀 Mafia killed: ${target.username} (ID: ${targetId})`);
+      } catch (err) {
+        console.error("❌ mafia_kill error:", err.message);
+        socket.emit("error", { message: "Failed to process kill" });
+      }
+    });
+
+    socket.on("doctor_heal", async ({ roomId, doctorId, targetId }) => {
+      try {
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom || gameRoom.phase !== "night") {
+          socket.emit("error", { message: "Invalid game or not night phase" });
+          return;
+        }
+
+        const doctor = gameRoom.players.find(
+          (p) => p.userId.toString() === doctorId
+        );
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetId
+        );
+
+        if (!doctor || !target) {
+          socket.emit("error", { message: "Invalid doctor or target" });
+          return;
+        }
+
+        if (doctor.gameRole !== "doctor" || !doctor.isAlive) {
+          socket.emit("error", { message: "Doctor must be alive" });
+          return;
+        }
+
+        if (gameRoom.hasDoctorHealed) {
+          socket.emit("error", { message: "Doctor has already healed this night" });
+          return;
+        }
+
+        target.isHealed = true;
+        gameRoom.hasDoctorHealed = true;
+        await gameRoom.save();
+
+        io.to(roomId).emit("doctor_healed", {
+          doctorId,
+          targetId,
+          message: "👨‍⚕️ Doctor healed someone!",
+        });
+
+        console.log(`Doctor (${doctor.username}) healed ${target.username}`);
+      } catch (err) {
+        console.error("❌ doctor_heal error:", err.message);
+        socket.emit("error", { message: "Failed to process heal" });
+      }
+    });
 
     socket.on("create_room", async (data) => {
-      console.log("data users:", data);
-      try { 
-        const owner = await User.findById(data.hostId)
-        console.log("owner:", owner)
+      try {
+        if (!data.hostId || !data.roomName) {
+          socket.emit("error", { message: "Missing hostId or roomName" });
+          return;
+        }
+
+        const owner = await User.findById(data.hostId);
+        if (!owner) {
+          socket.emit("error", { message: "User not found" });
+          return;
+        }
+
         const newRoom = await Game.create({
           roomId: uniqId(),
           roomName: data.roomName,
@@ -122,20 +262,6 @@ export const socketHandler = (io) => {
           phase: "waiting",
         });
 
-        // 2. Roomga hostni qo‘shamiz
-        newRoom.players.push({
-          userId: owner._id,
-          username: owner.username, // kerakli nom kelsin
-          isAlive: true,
-          isReady: false,
-          voice: [],
-        });
-
-        console.log("debug players:", newRoom)
-
-        await newRoom.save(); // host qo‘shilgach saqlaymiz
-
-        // 3. Hostni roomga qo‘shamiz (socket.join)
         socket.join(newRoom.roomId);
         socket.data.userId = data.hostId;
         socket.data.roomId = newRoom.roomId;
@@ -152,26 +278,50 @@ export const socketHandler = (io) => {
       }
     });
 
-    socket.on("send_message", async (data) => {
+    socket.on("send_message", async ({ data, global }) => {
       try {
-        console.log("message keldi:", data);
+        const senderId = data?.user?.user?._id;
+        if (!senderId || !data.message) {
+          socket.emit("error", { message: "Invalid sender ID or message" });
+          return;
+        }
 
         const newMessage = await GlobalChat.create({
-          sender: data.user.user._id, // user._id bo'lishi kerak
+          sender: senderId,
           text: data.message,
+          global,
         });
 
-        // Populate sender so we get the full user object (not just _id)
-        const populatedMessage = await newMessage.populate(
+        const populated = await newMessage.populate(
           "sender",
           "_id username avatar role"
         );
 
-        console.log("message saved:", populatedMessage);
+        if (global) {
+          io.emit("receive_message", populated);
+        } else if (data.roomId) {
+          io.to(data.roomId).emit("receive_message", populated);
+        } else {
+          socket.emit("receive_message", populated);
+        }
 
-        io.emit("receive_message", populatedMessage);
+        console.log(`✅ Message sent by ${populated.sender.username}`);
       } catch (err) {
         console.error("❌ send_message error:", err.message);
+        socket.emit("error", { message: "Failed to send message" });
+      }
+    });
+
+    socket.on("fetch_messages", async ({ global }) => {
+      try {
+        const msgs = await GlobalChat.find({ global })
+          .populate("sender", "_id username avatar role")
+          .sort({ createdAt: 1 })
+          .limit(50);
+        socket.emit("initial_messages", msgs);
+      } catch (err) {
+        console.error("❌ fetch_messages error:", err.message);
+        socket.emit("error", { message: "Failed to fetch messages" });
       }
     });
 
@@ -179,13 +329,6 @@ export const socketHandler = (io) => {
       await sendRooms();
     });
 
-    socket.on("send_room_message", ({ roomId, message }) => {
-      io.to(String(roomId)).emit("receive_room_message", message);
-    });
-    socket.on("add_voice", async (data) => {
-      console.log("add_voice:", data);
-      
-    });
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
         if (!roomId || !userId || !username) {
@@ -219,9 +362,8 @@ export const socketHandler = (io) => {
             username,
             isAlive: true,
             isReady: false,
-            voice: []
+            voice: [],
           });
-          
           await gameRoom.save();
         }
 
@@ -295,7 +437,7 @@ export const socketHandler = (io) => {
           io.to(roomId).emit("update_players", gameRoom.players);
           io.to(roomId).emit("game_phase", gameRoom);
 
-          startRoomTimer(roomId, 60);
+          startRoomTimer(roomId, PHASE_DURATIONS.night);
         }
       } catch (err) {
         console.error("❌ ready error:", err.message);
@@ -311,37 +453,33 @@ export const socketHandler = (io) => {
       startRoomTimer(roomId, duration);
     });
 
-    socket.on("game_phase", async ({ roomId }) => {
+    socket.on("get_game_status", async ({ roomId }) => {
       try {
-        const gameRoom = await Game.findOne({ roomId });
-        if (!gameRoom) return;
-
-        if (gameRoom.phase === "started") {
-          gameRoom.phase = "night";
-          startRoomTimer(roomId, 180);
-        } else if (gameRoom.phase === "night") {
-          gameRoom.phase = "day";
-          startRoomTimer(roomId, 180);
-        } else if (gameRoom.phase === "day") {
-          gameRoom.phase = "ended";
-          gameRoom.endedAt = new Date();
-          startRoomTimer(roomId, 10);
-        } else if (gameRoom.phase === "ended") {
-          gameRoom.phase = "waiting";
-          gameRoom.winner = null;
-          gameRoom.currentTurn = 0;
-          gameRoom.players.forEach((p) => {
-            p.isReady = false;
-            p.isAlive = true;
-            p.gameRole = null;
-          });
+        if (!roomId) {
+          socket.emit("error", { message: "Missing roomId" });
+          return;
         }
 
-        await gameRoom.save();
-        io.to(roomId).emit("game_phase", gameRoom);
-        io.to(roomId).emit("game_players", gameRoom);
-      } catch (e) {
-        console.error("❌ game_phase error:", e.message);
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom) {
+          socket.emit("error", { message: "Room not found" });
+          return;
+        }
+
+        const timeLeft = getTimeLeftForRoom(roomId);
+        socket.emit("game_status", {
+          timeLeft: timeLeft !== null ? Math.floor(timeLeft) : null,
+          phase: gameRoom.phase,
+        });
+
+        console.log(
+          `🔎 get_game_status: Room ${roomId} | Phase: ${gameRoom.phase} | TimeLeft: ${
+            timeLeft !== null ? Math.floor(timeLeft) : "N/A"
+          }s`
+        );
+      } catch (err) {
+        console.error("❌ get_game_status error:", err.message);
+        socket.emit("error", { message: "Failed to get game status" });
       }
     });
 
@@ -442,6 +580,91 @@ export const socketHandler = (io) => {
       } catch (err) {
         console.error("❌ get_players error:", err.message);
         socket.emit("error", { message: "Failed to get players" });
+      }
+    });
+
+    socket.on("vote_player", async ({ roomId, voterId, targetUserId }) => {
+      try {
+        if (!roomId || !voterId || !targetUserId) {
+          socket.emit("error", { message: "Missing roomId, voterId, or targetUserId" });
+          return;
+        }
+
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom || gameRoom.phase !== "day") {
+          socket.emit("error", { message: "Invalid game or not day phase" });
+          return;
+        }
+
+        const voter = gameRoom.players.find(
+          (p) => p.userId.toString() === voterId
+        );
+        if (!voter || !voter.isAlive) {
+          socket.emit("error", { message: "Voter must be alive" });
+          return;
+        }
+
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetUserId
+        );
+        if (!target || !target.isAlive) {
+          socket.emit("error", { message: "Target must be alive" });
+          return;
+        }
+
+        target.votes = (target.votes || 0) + 1;
+        await gameRoom.save();
+
+        io.to(roomId).emit("player_voted", {
+          targetUserId,
+          votes: target.votes,
+        });
+
+        console.log(`✅ Player ${voterId} voted for ${targetUserId}`);
+      } catch (err) {
+        console.error("❌ vote_player error:", err.message);
+        socket.emit("error", { message: "Failed to process vote" });
+      }
+    });
+
+    socket.on("check_player", async ({ roomId, checkerId, targetUserId }) => {
+      try {
+        if (!roomId || !checkerId || !targetUserId) {
+          socket.emit("error", { message: "Missing roomId, checkerId, or targetUserId" });
+          return;
+        }
+
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom || gameRoom.phase !== "night") {
+          socket.emit("error", { message: "Invalid game or not night phase" });
+          return;
+        }
+
+        const checker = gameRoom.players.find(
+          (p) => p.userId.toString() === checkerId
+        );
+        if (!checker || checker.gameRole !== "detective") {
+          socket.emit("error", { message: "Checker must be a detective" });
+          return;
+        }
+
+        const target = gameRoom.players.find(
+          (p) => p.userId.toString() === targetUserId
+        );
+        if (!target) {
+          socket.emit("error", { message: "Target not found" });
+          return;
+        }
+
+        socket.emit("check_result", {
+          targetUserId,
+          role: target.gameRole,
+        });
+
+        console.log(`✅ Detective ${checkerId} checked ${targetUserId}`);
+      } catch (err) {
+        console.error("❌ check_player error:", err.message);
+        socket.emit("error", { message: "Failed to check player" });
       }
     });
   });
