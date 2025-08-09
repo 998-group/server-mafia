@@ -18,7 +18,7 @@ export const socketHandler = (io) => {
     const roles = [];
     const mafiaCount = Math.max(1, Math.floor(playerCount / 4));
     const doctorCount = playerCount >= 3 ? 1 : 0;
-    const detectiveCount = playerCount >= 6 ? 1 : 0;
+    const detectiveCount = playerCount >= 4 ? 1 : 0;
 
     for (let i = 0; i < mafiaCount; i++) roles.push("mafia");
     if (doctorCount) roles.push("doctor");
@@ -45,7 +45,7 @@ export const socketHandler = (io) => {
       const current = roomTimers[roomId];
       if (!current) return;
 
-      console.log(`⏲ ${roomId}: ${current.timeLeft}s left`);
+      console.log(`⏲️ ${roomId}: ${current.timeLeft}s left`);
 
       if (current.timeLeft <= 0) {
         clearInterval(current.interval);
@@ -60,10 +60,10 @@ export const socketHandler = (io) => {
 
           if (gameRoom.phase === "started") {
             gameRoom.phase = "night";
-            startRoomTimer(roomId, 180);
+            startRoomTimer(roomId, 10);
           } else if (gameRoom.phase === "night") {
             gameRoom.phase = "day";
-            startRoomTimer(roomId, 180);
+            startRoomTimer(roomId, 10);
           } else if (gameRoom.phase === "day") {
             gameRoom.phase = "ended";
             gameRoom.endedAt = new Date();
@@ -92,6 +92,7 @@ export const socketHandler = (io) => {
       current.timeLeft--;
     }, 1000);
   };
+
 
 
 
@@ -142,7 +143,7 @@ export const socketHandler = (io) => {
       console.log(`💀 Mafia killed: ${target.username} (ID: ${targetId})`);
     });
 
-    socket.on("doctor_heal", ({ roomId, doctorId, targetId }) => {
+    socket.on("doctor_heal", async ({ roomId, doctorId, targetId }) => {
       console.log({ roomId, doctorId, targetId })
       const game = games[roomId];
       console.log("game", game)
@@ -150,32 +151,83 @@ export const socketHandler = (io) => {
     
       const doctor = game.players.find(p => p._id.toString() === doctorId);
       const target = game.players.find(p => p._id.toString() === targetId);
-      console.log("killer", doctor)
+      console.log("doctr", doctor)
       console.log("target", target)
       if (!doctor || !target) return;
       if (doctor.role !== "doctor") return;
       if (!doctor.isAlive) return;
     
-      // faqat 1 marta davolay oladi
       if (game.hasDoctorHealed) {
         socket.emit("error_message", "Siz allaqachon davolagansiz.");
         return;
       }
     
-      // targetni saqlab qo'yamiz
+      // 1️⃣ Xotirada yangilash
       target.isAlive = true;
       game.savedPlayerId = target._id.toString();
       game.hasDoctorHealed = true;
     
+      // 2️⃣ Bazada yangilash
+      await Game.updateOne(
+        { roomId, "players.userId": target._id },
+        { $set: { "players.$.isAlive": true } }
+      );
+    
+      // 3️⃣ Hammani xabardor qilish
       io.to(roomId).emit("doctor_healed", {
         doctorId,
         targetId,
         message: `👨‍⚕️ Doctor kimnidir davoladi!`
       });
     
+      // 4️⃣ Yangi player ro'yxatini qayta yuborish
+      const updatedRoom = await Game.findOne({ roomId });
+      io.to(roomId).emit("game_players", updatedRoom);
+    
       console.log(`Doctor (${doctor.username}) healed ${target.username}`);
     });
     
+
+    socket.on("detective_check", ({ roomId, detectiveId, targetId }) => {
+      const game = games[roomId];
+      if (!game) return;
+
+      const detective = game.players.find(p => p._id === detectiveId);
+      const target = game.players.find(p => p._id === targetId);
+
+      if (!detective || !target) return;
+      if (detective.role !== "detective" || !detective.isAlive) return;
+      if (game.hasDetectiveActed) return;
+
+      game.hasDetectiveActed = true;
+      socket.emit("detective_result", {
+        targetId,
+        role: target.role,
+      });
+    });
+
+
+    socket.on("detective_kill", ({ roomId, detectiveId, targetId }) => {
+      const game = games[roomId];
+      if (!game) return;
+
+      const detective = game.players.find(p => p._id === detectiveId);
+      const target = game.players.find(p => p._id === targetId);
+      console.log("detectiveKill", detective)
+      console.log("target", target)
+      if (!detective || !target) return;
+      if (detective.role !== "detective" || !detective.isAlive || !target.isAlive) return;
+      if (game.hasDetectiveActed) return;
+
+      target.isAlive = false;
+      game.hasDetectiveActed = true;
+
+      io.to(roomId).emit("player_killed_by_detective", {
+        detectiveId,
+        targetId,
+        message: `🕵️ Detektiv ${target.username} ni o‘ldirdi!`,
+      });
+    });
 
 
     socket.on("create_room", async (data) => {
@@ -253,10 +305,102 @@ export const socketHandler = (io) => {
     socket.on("send_message", ({ roomId, message }) => {
       io.to(String(roomId)).emit("receive_message", message);
     });
-    socket.on("add_voice", async (data) => {
-      console.log("add_voice:", data);
+    socket.on("add_voice", ({ roomId, selected, user }) => {
+      const gameRoom = games[roomId];
+      if (!gameRoom) return;
 
+      const voter = gameRoom.players.find(p => p._id === user);
+      const votedPlayer = gameRoom.players.find(p => p._id === selected);
+
+      // Faqat isAlive bo'lganlar ovoz bera oladi
+      if (!voter || !voter.isAlive || !votedPlayer || !votedPlayer.isAlive) return;
+
+      // Dublikat ovoz berishni oldini olish
+      if (!voter.voice) voter.voice = [];
+      if (voter.voice.includes(selected)) return;
+
+      voter.voice.push(selected); // ovoz berilgan
+
+      // Ovoz sanash uchun hammasini yig'amiz
+      const votes = {};
+
+      for (let p of gameRoom.players) {
+        if (p.voice && p.voice.length > 0) {
+          const selectedId = p.voice[0];
+          votes[selectedId] = (votes[selectedId] || 0) + 1;
+        }
+      }
+
+      // Ko‘p ovoz olgan topiladi
+      const maxVotes = Math.max(...Object.values(votes));
+      const topVoted = Object.entries(votes)
+        .filter(([_, count]) => count === maxVotes)
+        .map(([id]) => id);
+
+      // Faqat bitta eng ko‘p ovozli bo‘lsa, uni chiqaramiz
+      let eliminatedPlayer = null;
+      if (topVoted.length === 1) {
+        eliminatedPlayer = gameRoom.players.find(p => p._id === topVoted[0]);
+        if (eliminatedPlayer) eliminatedPlayer.isAlive = false;
+      }
+
+      io.to(roomId).emit("voice_results", {
+        votes,
+        eliminated: eliminatedPlayer ? {
+          username: eliminatedPlayer.username,
+          id: eliminatedPlayer._id,
+          role: eliminatedPlayer.role
+        } : null
+      });
     });
+
+    socket.on("remove_voice", ({ roomId, userId, user }) => {
+      const gameRoom = games[roomId];
+      if (!gameRoom) return;
+
+      const voter = gameRoom.players.find(p => p._id === user);
+      if (!voter || !voter.isAlive) return;
+
+      // Agar oldin ovoz bergan bo‘lsa, o‘chirib tashlaymiz
+      if (voter.voice && voter.voice.includes(userId)) {
+        voter.voice = voter.voice.filter(v => v !== userId);
+      }
+
+      // Yangilangan ovozlarni hisoblab, frontga yuboramiz
+      const votes = {};
+
+      for (let p of gameRoom.players) {
+        if (p.voice && p.voice.length > 0) {
+          const selectedId = p.voice[0];
+          votes[selectedId] = (votes[selectedId] || 0) + 1;
+        }
+      }
+
+      // Qayta ovoz yetakchisini aniqlash
+      const maxVotes = Math.max(...Object.values(votes), 0);
+      const topVoted = Object.entries(votes)
+        .filter(([_, count]) => count === maxVotes)
+        .map(([id]) => id);
+
+      let eliminatedPlayer = null;
+
+      // Faqat bitta lider bo‘lsa
+      if (topVoted.length === 1) {
+        eliminatedPlayer = gameRoom.players.find(p => p._id === topVoted[0]);
+      }
+
+      io.to(roomId).emit("voice_results", {
+        votes,
+        eliminated: eliminatedPlayer
+          ? {
+            username: eliminatedPlayer.username,
+            id: eliminatedPlayer._id,
+            role: eliminatedPlayer.role,
+          }
+          : null,
+      });
+    });
+
     socket.on("join_room", async ({ roomId, userId, username }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
@@ -292,7 +436,16 @@ export const socketHandler = (io) => {
 
           await gameRoom.save();
         }
-
+        if (!games[roomId]) {
+          games[roomId] = {
+            mafiaKill: null,
+            doctorSave: null,
+            detectiveCheck: null,
+            hasMafiaActed: false,
+            hasDoctorActed: false,
+            hasDetectiveActed: false, // 🟢 MUHIM QATOR!
+          };
+        }
         socket.join(roomId);
         socket.data.userId = userId;
         socket.data.roomId = roomId;
@@ -355,7 +508,7 @@ export const socketHandler = (io) => {
           io.to(roomId).emit("game_players", gameRoom);
           io.to(roomId).emit("game_phase", gameRoom);
 
-          startRoomTimer(roomId, 60);
+          startRoomTimer(roomId, 10);
         }
       } catch (e) {
         console.error("❌ ready error:", e);
@@ -373,10 +526,10 @@ export const socketHandler = (io) => {
 
         if (gameRoom.phase === "started") {
           gameRoom.phase = "night";
-          startRoomTimer(roomId, 180);
+          startRoomTimer(roomId, 10);
         } else if (gameRoom.phase === "night") {
           gameRoom.phase = "day";
-          startRoomTimer(roomId, 180);
+          startRoomTimer(roomId, 10);
         } else if (gameRoom.phase === "day") {
           gameRoom.phase = "ended";
           gameRoom.endedAt = new Date();
@@ -391,7 +544,6 @@ export const socketHandler = (io) => {
             p.gameRole = null;
           });
         }
-
         await gameRoom.save();
         io.to(roomId).emit("game_phase", gameRoom);
         io.to(roomId).emit("game_players", gameRoom);
@@ -399,6 +551,9 @@ export const socketHandler = (io) => {
         console.error("❌ game_phase error:", e.message);
       }
     });
+
+
+
     socket.on("get_game_status", async ({ roomId }) => {
       try {
         const gameRoom = await Game.findOne({ roomId });
