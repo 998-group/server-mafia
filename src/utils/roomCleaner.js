@@ -6,7 +6,7 @@ cron.schedule("*/1 * * * *", async () => {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000); // ✅ 1 soat oldingi vaqt
     const deletedRooms = await Game.deleteMany({
       createdAt: { $lte: oneHourAgo },
-      phase: {$in: ["waiting", "started"] }, // ✅ faqat kutish holatida qolganlar
+      phase: {$in: ["waiting", "started", "night"] }, // ✅ faqat kutish holatida qolganlar
     });
 
     if (deletedRooms.deletedCount > 0) {
