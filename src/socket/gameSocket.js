@@ -2,6 +2,7 @@ import Game from "../models/Game.js";
 import GlobalChat from "../models/GlobalChat.js";
 import User from "../models/User.js";
 import uniqId from "uniqid";
+import { SendRooms } from "./SendRoom.js";
 
 // Configuration constants
 const PHASE_DURATIONS = {
@@ -17,19 +18,10 @@ const ROLE_DISTRIBUTION = {
   detective: (playerCount) => (playerCount >= 6 ? 1 : 0),
 };
 
-export const socketHandler = (io) => {
+export const socketHandler = async (io) => {
   const roomTimers = {};
 
-  const sendRooms = async () => {
-    try {
-      const rooms = await Game.find({ players: { $not: { $size: 0 } } })
-        .sort({ createdAt: -1 })
-        .limit(100);
-      io.emit("update_rooms", rooms);
-    } catch (err) {
-      console.error("❌ sendRooms error:", err.message);
-    }
-  };
+  const sendRooms =  await sendRooms();
 
   const generateRoles = (playerCount) => {
     const roles = [];
