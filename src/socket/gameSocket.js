@@ -3,7 +3,7 @@ import Game from "../models/Game.js";
 import GlobalChat from "../models/GlobalChat.js";
 import User from "../models/User.js";
 import uniqId from "uniqid";
-import { SendRooms } from "./SendRoom.js";
+import { sendRooms } from "./sendRoomSocket.js";
 
 // Configuration constants
 const PHASE_DURATIONS = {
@@ -22,7 +22,7 @@ const ROLE_DISTRIBUTION = {
 export const socketHandler = async (io) => {
   const roomTimers = {};
 
-  const sendRooms =  await sendRooms();
+  await sendRooms(io);
 
   const generateRoles = (playerCount) => {
     const roles = [];
