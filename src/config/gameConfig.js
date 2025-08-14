@@ -13,8 +13,8 @@ export const GAME_CONFIG = {
   // Other game settings
   MAX_PLAYERS: 10,
   PHASE_DURATIONS: {
-    night: 180, // 3 minutes
-    day: 180, // 3 minutes
+    night: 30, // 3 minutes
+    day: 30, // 3 minutes
     ended: 10, // 10 seconds
     waiting: null,
   },
