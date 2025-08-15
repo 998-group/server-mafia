@@ -3,7 +3,7 @@ import Game from "../../models/Game.js";
 import User from "../../models/User.js";
 import uniqId from "uniqid";
 import { GAME_CONFIG } from "../../config/gameConfig.js";
-import { generateRoles } from "../helpers/gameLogic.js";
+import  generateRoles  from "../helpers/gameLogic.js";
 
 export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
   

@@ -239,3 +239,5 @@ export const resetGameForNewRound = (gameRoom) => {
   
   console.log("🔄 Game reset for new round");
 };
+
+export default { resetNightActions, resetDayVotes, handleGameEnd, calculateGameStats, resetGameForNewRound };

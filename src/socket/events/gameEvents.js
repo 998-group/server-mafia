@@ -1,6 +1,7 @@
 // src/socket/events/gameEvents.js - Enhanced with detailed logging
 import Game from "../../models/Game.js";
 import { GAME_CONFIG } from "../../config/gameConfig.js";
+import socket from "../../../../client-mafia/src/socket.js";
 
 export const setupGameEvents = (socket, io, timerManager) => {
 
