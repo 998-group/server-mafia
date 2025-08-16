@@ -1,192 +1,213 @@
-// src/config/gameConfig.js - Game Configuration
-
+// src/config/gameConfig.js - Complete Game Configuration
 export const GAME_CONFIG = {
-  // ===== PLAYER LIMITS =====
-  MIN_PLAYERS: 3,
-  MAX_PLAYERS: 10,
-
   // ===== PHASE DURATIONS (in milliseconds) =====
   PHASE_DURATIONS: {
-    night: 60000,    // 1 minute
-    day: 120000,     // 2 minutes  
-    voting: 60000,   // 1 minute
-    discussion: 90000 // 1.5 minutes
+    night: 60000,      // 1 minute - Night phase for special roles
+    day: 120000,       // 2 minutes - Day phase for discussion
+    voting: 60000,     // 1 minute - Voting phase
+    started: 5000,     // 5 seconds - Transition delay after game starts
+    preparation: 3000  // 3 seconds - Role assignment preparation
   },
 
-  // ===== GAME MODES =====
-  TEST_MODE: process.env.NODE_ENV !== 'production', // Shorter timers for testing
-  
+  // ===== PLAYER LIMITS =====
+  MIN_PLAYERS: 3,
+  MAX_PLAYERS: 15,
+
   // ===== ROLE CONFIGURATION =====
   ROLES: {
+    MAFIA_RATIO: 0.25,     // 25% of players will be mafia
+    DOCTOR_COUNT: 1,       // Always 1 doctor
+    DETECTIVE_COUNT: 1,    // Always 1 detective (if enough players)
+    MIN_PLAYERS_FOR_DETECTIVE: 5  // Need at least 5 players for detective
+  },
+
+  // ===== GAME PHASES =====
+  PHASES: {
+    WAITING: 'waiting',
+    STARTED: 'started',
+    NIGHT: 'night',
+    DAY: 'day',
+    VOTING: 'voting',
+    ENDED: 'ended'
+  },
+
+  // ===== PLAYER ROLES =====
+  PLAYER_ROLES: {
     VILLAGER: 'villager',
     MAFIA: 'mafia',
     DOCTOR: 'doctor',
     DETECTIVE: 'detective'
   },
 
-  // ===== ROLE DISTRIBUTION RULES =====
-  ROLE_DISTRIBUTION: {
-    3: { mafia: 1, doctor: 1, detective: 0, villager: 1 },
-    4: { mafia: 1, doctor: 1, detective: 0, villager: 2 },
-    5: { mafia: 1, doctor: 1, detective: 1, villager: 2 },
-    6: { mafia: 1, doctor: 1, detective: 1, villager: 3 },
-    7: { mafia: 2, doctor: 1, detective: 1, villager: 3 },
-    8: { mafia: 2, doctor: 1, detective: 1, villager: 4 },
-    9: { mafia: 2, doctor: 1, detective: 1, villager: 5 },
-    10: { mafia: 3, doctor: 1, detective: 1, villager: 5 }
-  },
-
-  // ===== VOTING RULES =====
-  VOTING: {
-    REQUIRE_MAJORITY: false,           // Simple plurality wins
-    ALLOW_TIE_ELIMINATION: false,      // Ties result in no elimination
-    ALLOW_SELF_VOTE: false,           // Players cannot vote for themselves
-    SHOW_VOTE_COUNT: true,            // Show live vote counts
-    ANONYMOUS_VOTING: false           // Show who voted for whom
-  },
-
-  // ===== NIGHT ACTION RULES =====
-  NIGHT_ACTIONS: {
-    MAFIA_MUST_KILL: false,           // Mafia can choose not to kill
-    DOCTOR_SELF_HEAL: true,           // Doctor can heal themselves
-    DETECTIVE_MULTIPLE_CHECKS: false, // Detective can only check one per night
-    SIMULTANEOUS_ACTIONS: true       // All night actions happen simultaneously
-  },
-
-  // ===== GAME FLOW =====
-  GAME_FLOW: {
-    START_WITH_NIGHT: true,           // Game starts with night phase
-    REVEAL_ROLES_ON_DEATH: true,      // Show role when player dies
-    LAST_WORDS: false,                // Allow final statement before elimination
-    DISCUSSION_BEFORE_VOTING: true   // Allow discussion phase before voting
-  },
-
   // ===== WIN CONDITIONS =====
   WIN_CONDITIONS: {
-    MAFIA_WIN_ON_EQUAL: true,         // Mafia wins when equal to villagers
-    REVEAL_ALL_ROLES_ON_WIN: true,    // Show all roles when game ends
-    ALLOW_DRAWS: false                // No draw conditions
+    MAFIA_WINS: 'mafia',
+    VILLAGERS_WIN: 'villagers'
   },
 
-  // ===== ROOM SETTINGS =====
-  ROOM: {
-    AUTO_START_WHEN_READY: true,      // Start when all players ready
-    KICK_INACTIVE_PLAYERS: false,     // Don't kick inactive players
-    REJOIN_AFTER_DISCONNECT: true,    // Allow rejoining after disconnect
-    SPECTATOR_MODE: false,            // No spectators allowed
-    ROOM_EXPIRY_HOURS: 24            // Rooms expire after 24 hours
-  },
-
-  // ===== CHAT SETTINGS =====
-  CHAT: {
-    ALLOW_GLOBAL_CHAT: true,          // Global chat enabled
-    ALLOW_ROOM_CHAT: true,            // Room chat enabled
-    DEAD_PLAYERS_CHAT: false,         // Dead players cannot chat
-    NIGHT_CHAT_DISABLED: true,       // No chat during night (except mafia)
-    MAFIA_NIGHT_CHAT: true,          // Mafia can chat at night
-    MAX_MESSAGE_LENGTH: 500          // Max characters per message
-  },
-
-  // ===== SECURITY SETTINGS =====
-  SECURITY: {
-    RATE_LIMIT_ACTIONS: true,         // Rate limit player actions
-    VALIDATE_ALL_ACTIONS: true,       // Validate all game actions
-    LOG_SUSPICIOUS_ACTIVITY: true,    // Log potential cheating
-    PREVENT_ROLE_REVEALING: true     // Prevent players from revealing roles
-  },
-
-  // ===== DEBUGGING =====
-  DEBUG: {
-    LOG_ALL_ACTIONS: process.env.NODE_ENV !== 'production',
-    VERBOSE_LOGGING: process.env.NODE_ENV !== 'production',
-    EXPOSE_GAME_STATE: process.env.NODE_ENV !== 'production'
-  }
-};
-
-// ===== ENVIRONMENT-SPECIFIC OVERRIDES =====
-if (GAME_CONFIG.TEST_MODE) {
-  // Shorter timers for testing
-  GAME_CONFIG.PHASE_DURATIONS = {
-    night: 10000,     // 10 seconds
-    day: 15000,       // 15 seconds
-    voting: 10000,    // 10 seconds
-    discussion: 10000 // 10 seconds
-  };
-  
-  console.log('🧪 Game running in TEST MODE with shorter timers');
-}
-
-// ===== VALIDATION FUNCTIONS =====
-export const validateConfig = () => {
-  const errors = [];
-
-  // Validate player limits
-  if (GAME_CONFIG.MIN_PLAYERS < 3) {
-    errors.push('MIN_PLAYERS must be at least 3');
-  }
-  
-  if (GAME_CONFIG.MAX_PLAYERS > 20) {
-    errors.push('MAX_PLAYERS should not exceed 20');
-  }
-  
-  if (GAME_CONFIG.MIN_PLAYERS >= GAME_CONFIG.MAX_PLAYERS) {
-    errors.push('MIN_PLAYERS must be less than MAX_PLAYERS');
-  }
-
-  // Validate phase durations
-  Object.entries(GAME_CONFIG.PHASE_DURATIONS).forEach(([phase, duration]) => {
-    if (duration < 5000) {
-      errors.push(`${phase} duration too short (minimum 5 seconds)`);
+  // ===== ROLE DESCRIPTIONS =====
+  ROLE_DESCRIPTIONS: {
+    villager: {
+      title: "You are a VILLAGER. Find and eliminate all mafia members.",
+      description: "Vote out the mafia to win",
+      objective: "Eliminate all mafia members",
+      nightAction: "Sleep and wait for day phase",
+      dayAction: "Discuss and vote to eliminate suspects"
+    },
+    mafia: {
+      title: "You are a MAFIA member. Kill villagers at night and blend in during the day.",
+      description: "Eliminate all villagers to win",
+      objective: "Eliminate all villagers",
+      nightAction: "Choose a player to eliminate",
+      dayAction: "Blend in and avoid suspicion"
+    },
+    doctor: {
+      title: "You are the DOCTOR. Heal players at night to save them from attacks.",
+      description: "Save the innocent, win with villagers",
+      objective: "Keep villagers alive",
+      nightAction: "Choose a player to heal",
+      dayAction: "Discuss and vote with villagers"
+    },
+    detective: {
+      title: "You are the DETECTIVE. Investigate players at night to discover their roles.",
+      description: "Find the mafia, win with villagers",
+      objective: "Identify the mafia",
+      nightAction: "Choose a player to investigate",
+      dayAction: "Use your knowledge to guide votes"
     }
-    if (duration > 600000) {
-      errors.push(`${phase} duration too long (maximum 10 minutes)`);
-    }
-  });
+  },
 
-  // Validate role distributions
-  Object.entries(GAME_CONFIG.ROLE_DISTRIBUTION).forEach(([playerCount, roles]) => {
-    const total = Object.values(roles).reduce((sum, count) => sum + count, 0);
-    if (total !== parseInt(playerCount)) {
-      errors.push(`Role distribution for ${playerCount} players doesn't add up`);
-    }
-  });
+  // ===== ROLE IMAGES =====
+  ROLE_IMAGES: {
+    villager: "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+    mafia: "https://cdn-icons-png.flaticon.com/512/3062/3062634.png",
+    doctor: "https://cdn-icons-png.flaticon.com/512/2785/2785482.png",
+    detective: "https://cdn-icons-png.flaticon.com/512/3110/3110270.png"
+  },
 
-  if (errors.length > 0) {
-    console.error('❌ Game configuration errors:', errors);
-    throw new Error(`Configuration validation failed: ${errors.join(', ')}`);
+  // ===== SOCKET EVENTS =====
+  SOCKET_EVENTS: {
+    // Room events
+    CREATE_ROOM: 'create_room',
+    JOIN_ROOM: 'join_room',
+    LEAVE_ROOM: 'leave_room',
+    JOINED_ROOM: 'joined_room',
+    UPDATE_PLAYERS: 'update_players',
+    
+    // Game events
+    START_GAME: 'start_game',
+    GAME_STARTED: 'game_started',
+    PHASE_CHANGED: 'phase_changed',
+    GAME_ENDED: 'game_ended',
+    RESTART_GAME: 'restart_game',
+    
+    // Action events
+    VOTE_PLAYER: 'vote_player',
+    MAFIA_KILL: 'mafia_kill',
+    DOCTOR_HEAL: 'doctor_heal',
+    DETECTIVE_CHECK: 'check_player',
+    
+    // Result events
+    NIGHT_RESULT: 'night_result',
+    INVESTIGATION_RESULT: 'investigation_result',
+    PLAYER_ELIMINATED: 'player_eliminated',
+    
+    // Timer events
+    TIMER_UPDATE: 'timer_update',
+    TIMER_STARTED: 'timer_started',
+    
+    // Status events
+    GET_GAME_STATUS: 'get_game_status',
+    GAME_STATUS: 'game_status',
+    ERROR: 'error'
+  },
+
+  // ===== GAME SETTINGS =====
+  SETTINGS: {
+    ALLOW_SPECTATORS: false,
+    REVEAL_ROLES_ON_DEATH: true,
+    ALLOW_DEAD_CHAT: false,
+    AUTO_START_TIMER: true,
+    SHOW_VOTE_COUNTS: true,
+    ANONYMOUS_VOTING: false
+  },
+
+  // ===== ERROR MESSAGES =====
+  ERROR_MESSAGES: {
+    ROOM_NOT_FOUND: "Room not found",
+    USER_NOT_FOUND: "User not found",
+    NOT_ENOUGH_PLAYERS: "Need at least 3 players to start",
+    GAME_ALREADY_STARTED: "Game already started",
+    ONLY_HOST_CAN_START: "Only host can start the game",
+    PLAYER_NOT_ALIVE: "You are not alive",
+    WRONG_PHASE: "Action not allowed in this phase",
+    ALREADY_VOTED: "You have already voted",
+    INVALID_TARGET: "Invalid target",
+    PERMISSION_DENIED: "Permission denied"
+  },
+
+  // ===== SUCCESS MESSAGES =====
+  SUCCESS_MESSAGES: {
+    ROOM_CREATED: "Room created successfully",
+    JOINED_ROOM: "Joined room successfully",
+    GAME_STARTED: "Game has started!",
+    VOTE_CAST: "Vote cast successfully",
+    ACTION_COMPLETED: "Action completed successfully"
   }
-
-  console.log('✅ Game configuration validated successfully');
-  return true;
 };
 
-// ===== HELPER FUNCTIONS =====
-export const getPhaseTimeout = (phase) => {
-  return GAME_CONFIG.PHASE_DURATIONS[phase] || GAME_CONFIG.PHASE_DURATIONS.day;
-};
+// ===== UTILITY FUNCTIONS =====
+export const GameUtils = {
+  // Get role distribution for given player count
+  getRoleDistribution: (playerCount) => {
+    if (playerCount < GAME_CONFIG.MIN_PLAYERS) {
+      throw new Error(`Need at least ${GAME_CONFIG.MIN_PLAYERS} players`);
+    }
 
-export const getRoleDistribution = (playerCount) => {
-  return GAME_CONFIG.ROLE_DISTRIBUTION[playerCount] || null;
-};
+    const mafiaCount = Math.max(1, Math.floor(playerCount * GAME_CONFIG.ROLES.MAFIA_RATIO));
+    const doctorCount = GAME_CONFIG.ROLES.DOCTOR_COUNT;
+    const detectiveCount = playerCount >= GAME_CONFIG.ROLES.MIN_PLAYERS_FOR_DETECTIVE ? 
+      GAME_CONFIG.ROLES.DETECTIVE_COUNT : 0;
+    const villagerCount = playerCount - mafiaCount - doctorCount - detectiveCount;
 
-export const isTestMode = () => {
-  return GAME_CONFIG.TEST_MODE;
-};
+    return {
+      mafia: mafiaCount,
+      doctor: doctorCount,
+      detective: detectiveCount,
+      villager: villagerCount,
+      total: playerCount
+    };
+  },
 
-export const getMaxPlayers = () => {
-  return GAME_CONFIG.MAX_PLAYERS;
-};
+  // Check if player count is valid
+  isValidPlayerCount: (count) => {
+    return count >= GAME_CONFIG.MIN_PLAYERS && count <= GAME_CONFIG.MAX_PLAYERS;
+  },
 
-export const getMinPlayers = () => {
-  return GAME_CONFIG.MIN_PLAYERS;
-};
+  // Get phase duration in seconds
+  getPhaseDurationSeconds: (phase) => {
+    return Math.floor((GAME_CONFIG.PHASE_DURATIONS[phase] || 0) / 1000);
+  },
 
-// ===== VALIDATE ON IMPORT =====
-try {
-  validateConfig();
-} catch (err) {
-  console.error('❌ Failed to load game configuration:', err.message);
-  process.exit(1);
-}
+  // Check if phase allows voting
+  isVotingPhase: (phase) => {
+    return phase === GAME_CONFIG.PHASES.DAY || phase === GAME_CONFIG.PHASES.VOTING;
+  },
+
+  // Check if phase allows night actions
+  isNightPhase: (phase) => {
+    return phase === GAME_CONFIG.PHASES.NIGHT;
+  },
+
+  // Get role description
+  getRoleDescription: (role) => {
+    return GAME_CONFIG.ROLE_DESCRIPTIONS[role] || GAME_CONFIG.ROLE_DESCRIPTIONS.villager;
+  },
+
+  // Get role image
+  getRoleImage: (role) => {
+    return GAME_CONFIG.ROLE_IMAGES[role] || GAME_CONFIG.ROLE_IMAGES.villager;
+  }
+};
 
 export default GAME_CONFIG;

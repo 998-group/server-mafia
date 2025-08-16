@@ -1,6 +1,6 @@
-// src/socket/gameSocket.js - Complete Fixed Version
-
+// src/socket/gameSocket.js - Complete Main Socket Handler
 import Game from "../models/Game.js";
+import User from "../models/User.js";
 import { GAME_CONFIG } from "../config/gameConfig.js";
 import { setupRoomEvents } from "./events/roomEvents.js";
 import { setupGameEvents } from "./events/gameEvents.js";
@@ -17,7 +17,7 @@ export const socketHandler = (io) => {
   const sendRooms = async () => {
     try {
       const rooms = await Game.find({
-        phase: { $in: ["waiting", "started", "night", "day"] }
+        phase: { $in: ["waiting", "started", "night", "day", "voting"] }
       })
       .select('roomId roomName players phase hostId currentTurn createdAt')
       .lean();
@@ -26,76 +26,82 @@ export const socketHandler = (io) => {
         roomId: room.roomId,
         roomName: room.roomName,
         playerCount: room.players ? room.players.length : 0,
-        maxPlayers: GAME_CONFIG.MAX_PLAYERS || 10,
+        maxPlayers: GAME_CONFIG.MAX_PLAYERS,
         phase: room.phase,
         hostId: room.hostId,
-        currentTurn: room.currentTurn || 1,
-        createdAt: room.createdAt
+        currentTurn: room.currentTurn,
+        createdAt: room.createdAt,
+        canJoin: room.phase === "waiting" && 
+                 room.players && 
+                 room.players.length < GAME_CONFIG.MAX_PLAYERS
       }));
 
-      io.emit("update_rooms", formattedRooms);
-      console.log(`📡 Sent ${formattedRooms.length} rooms to all clients`);
+      io.emit("rooms_updated", formattedRooms);
+      console.log(`📡 Sent ${formattedRooms.length} active rooms to all clients`);
     } catch (err) {
-      console.error("❌ sendRooms error:", err.message);
-      io.emit("update_rooms", []);
+      console.error('❌ Error sending rooms:', err.message);
     }
   };
 
-  // ===== DISCONNECT HANDLER =====
-  const handleDisconnect = async (socket) => {
-    const { userId, roomId } = socket.data || {};
-    console.log(`🔌 User disconnecting: ${userId} from room ${roomId}`);
-    
-    if (!userId) return;
-
+  // ===== CLEANUP DISCONNECTED PLAYERS =====
+  const handlePlayerDisconnect = async (socket) => {
     try {
-      // ✅ Find all active rooms user is in
-      const userRooms = await Game.find({ 
-        "players.userId": userId,
-        phase: { $in: ["waiting", "started", "night", "day"] }
-      });
+      const userId = socket.data?.userId;
+      const roomId = socket.data?.roomId;
 
-      for (const gameRoom of userRooms) {
+      if (!userId || !roomId) {
+        console.log(`🔌 Socket ${socket.id} disconnected (no user/room data)`);
+        return;
+      }
+
+      console.log(`🔌 User ${userId} disconnecting from room ${roomId}`);
+
+      // ✅ Find and update game room
+      const gameRoom = await Game.findOne({ roomId });
+      if (gameRoom) {
         const playerIndex = gameRoom.players.findIndex(
-          p => p.userId.toString() === userId.toString()
+          p => p.userId.toString() === userId
         );
 
-        if (playerIndex !== -1) {
-          const wasHost = gameRoom.hostId.toString() === userId.toString();
+        if (playerIndex > -1) {
           const leavingPlayer = gameRoom.players[playerIndex];
           
-          console.log(`🔌 Removing user ${leavingPlayer.username} from room ${gameRoom.roomId}`);
-
-          // ✅ Remove player
-          gameRoom.players.splice(playerIndex, 1);
-
-          if (gameRoom.players.length === 0) {
-            // ✅ Delete empty room
-            await Game.deleteOne({ roomId: gameRoom.roomId });
-            io.to(gameRoom.roomId).emit("room_closed", {
-              message: "Room has been closed - no players remaining"
-            });
-            console.log(`🗑️ Deleted empty room ${gameRoom.roomId}`);
-          } else {
+          // ✅ Handle based on game phase
+          if (gameRoom.phase === GAME_CONFIG.PHASES.WAITING) {
+            // Remove player completely if game hasn't started
+            gameRoom.players.splice(playerIndex, 1);
+            
             // ✅ Assign new host if needed
-            if (wasHost) {
+            if (gameRoom.hostId.toString() === userId && gameRoom.players.length > 0) {
               gameRoom.hostId = gameRoom.players[0].userId;
-              io.to(gameRoom.roomId).emit("new_host", { 
+              io.to(roomId).emit("new_host_assigned", { 
                 newHostId: gameRoom.hostId,
                 newHostUsername: gameRoom.players[0].username 
               });
               console.log(`👑 New host assigned: ${gameRoom.players[0].username}`);
             }
+          } else {
+            // Keep player in game but mark as disconnected for ongoing games
+            leavingPlayer.isConnected = false;
+            leavingPlayer.disconnectedAt = new Date();
+          }
 
-            gameRoom.updatedAt = new Date();
-            await gameRoom.save();
-            
-            // ✅ Notify remaining players
-            io.to(gameRoom.roomId).emit("update_players", gameRoom.players);
-            io.to(gameRoom.roomId).emit("player_disconnected", {
-              message: `${leavingPlayer.username} disconnected`,
-              username: leavingPlayer.username
-            });
+          gameRoom.updatedAt = new Date();
+          await gameRoom.save();
+          
+          // ✅ Notify remaining players
+          io.to(roomId).emit("update_players", gameRoom.players);
+          io.to(roomId).emit("player_disconnected", {
+            message: `${leavingPlayer.username} ${gameRoom.phase === 'waiting' ? 'left' : 'disconnected'}`,
+            username: leavingPlayer.username,
+            playerCount: gameRoom.players.length,
+            phase: gameRoom.phase
+          });
+
+          // ✅ Check if room should be deleted
+          if (gameRoom.players.length === 0) {
+            await Game.deleteOne({ roomId });
+            console.log(`🗑️ Empty room ${roomId} deleted`);
           }
         }
       }
@@ -116,14 +122,14 @@ export const socketHandler = (io) => {
 
   // ===== SOCKET CONNECTION HANDLER =====
   io.on("connection", (socket) => {
-    console.log(`🔌 Connected: ${socket.id}`);
+    console.log(`🔌 New connection: ${socket.id}`);
     
     // ✅ Send socket ID to client
     socket.emit("your_socket_id", socket.id);
 
     // ===== SETUP EVENT HANDLERS =====
     try {
-      const roomEventHandlers = setupRoomEvents(socket, io, timerManager, sendRooms);
+      setupRoomEvents(socket, io, timerManager, sendRooms);
       setupGameEvents(socket, io, timerManager);
       setupMessageEvents(socket, io);
       
@@ -150,18 +156,13 @@ export const socketHandler = (io) => {
           return;
         }
 
-        const gameRoom = await Game.findOne({ roomId })
-          .populate("players.userId", "username avatar")
-          .populate("hostId", "username avatar")
-          .lean();
-
+        const gameRoom = await Game.findOne({ roomId });
         if (!gameRoom) {
           socket.emit("error", { message: "Room not found" });
           return;
         }
 
-        // ✅ Format room info for client
-        const roomInfo = {
+        socket.emit("room_info", {
           roomId: gameRoom.roomId,
           roomName: gameRoom.roomName,
           players: gameRoom.players,
@@ -169,186 +170,165 @@ export const socketHandler = (io) => {
           hostId: gameRoom.hostId,
           currentTurn: gameRoom.currentTurn,
           playerCount: gameRoom.players.length,
-          maxPlayers: GAME_CONFIG.MAX_PLAYERS || 10,
-          createdAt: gameRoom.createdAt
-        };
+          maxPlayers: GAME_CONFIG.MAX_PLAYERS,
+          canJoin: gameRoom.phase === "waiting" && gameRoom.players.length < GAME_CONFIG.MAX_PLAYERS
+        });
 
-        socket.emit("room_info", roomInfo);
-        console.log(`ℹ️ Room info sent for ${roomId} to ${socket.id}`);
+        console.log(`ℹ️ Room info sent for room ${roomId} to ${socket.id}`);
       } catch (err) {
-        console.error("❌ get_room_info error:", err.message);
+        console.error(`❌ get_room_info error for ${socket.id}:`, err.message);
         socket.emit("error", { message: "Failed to get room info" });
       }
     });
 
-    // ===== CONFIG EVENTS =====
-    socket.on("get_game_config", () => {
+    // ===== USER MANAGEMENT EVENTS =====
+    socket.on("register_user", async ({ userId, username }) => {
       try {
-        const config = {
-          TEST_MODE: GAME_CONFIG.TEST_MODE || false,
-          MIN_PLAYERS: GAME_CONFIG.MIN_PLAYERS || 3,
-          MAX_PLAYERS: GAME_CONFIG.MAX_PLAYERS || 10,
-          PHASE_DURATIONS: GAME_CONFIG.PHASE_DURATIONS || {
-            night: 60000,
-            day: 120000,
-            voting: 60000
-          },
-          ROLES: GAME_CONFIG.ROLES || ["villager", "mafia", "doctor", "detective"]
-        };
+        if (!userId) {
+          socket.emit("error", { message: "Missing userId" });
+          return;
+        }
+
+        // Store user data in socket
+        socket.data.userId = userId;
+        socket.data.username = username;
+
+        console.log(`👤 User registered: ${username} (${userId}) on socket ${socket.id}`);
         
-        socket.emit("game_config", config);
-        console.log(`⚙️ Game config sent to ${socket.id}`);
+        socket.emit("user_registered", { 
+          userId, 
+          username, 
+          socketId: socket.id 
+        });
       } catch (err) {
-        console.error("❌ get_game_config error:", err.message);
-        socket.emit("error", { message: "Failed to get game config" });
+        console.error(`❌ register_user error for ${socket.id}:`, err.message);
+        socket.emit("error", { message: "Failed to register user" });
       }
     });
 
-    // ===== HEALTH CHECK EVENT =====
+    // ===== HEARTBEAT/PING EVENTS =====
     socket.on("ping", () => {
-      socket.emit("pong", { 
-        timestamp: new Date().toISOString(),
-        socketId: socket.id 
+      socket.emit("pong", { timestamp: Date.now() });
+    });
+
+    socket.on("heartbeat", ({ userId, roomId }) => {
+      // Update last seen for user
+      if (socket.data) {
+        socket.data.lastSeen = new Date();
+      }
+      
+      socket.emit("heartbeat_ack", { 
+        timestamp: Date.now(),
+        userId,
+        roomId 
       });
     });
 
-    // ===== USER STATUS EVENTS =====
-    socket.on("user_status", async ({ userId, status }) => {
-      try {
-        if (!userId) {
-          socket.emit("error", { message: "Missing userId" });
-          return;
-        }
-
-        // ✅ Update user status in all their rooms
-        const userRooms = await Game.find({ 
-          "players.userId": userId 
-        });
-
-        for (const room of userRooms) {
-          const player = room.players.find(p => p.userId.toString() === userId.toString());
-          if (player) {
-            player.status = status || 'online';
-            await room.save();
-            
-            io.to(room.roomId).emit("player_status_update", {
-              userId,
-              username: player.username,
-              status: player.status
-            });
-          }
-        }
-
-        console.log(`👤 User ${userId} status updated to: ${status}`);
-      } catch (err) {
-        console.error("❌ user_status error:", err.message);
-        socket.emit("error", { message: "Failed to update user status" });
-      }
-    });
-
     // ===== RECONNECTION HANDLING =====
-    socket.on("reconnect_to_game", async ({ userId }) => {
+    socket.on("reconnect_to_game", async ({ userId, roomId }) => {
       try {
-        if (!userId) {
-          socket.emit("error", { message: "Missing userId" });
+        if (!userId || !roomId) {
+          socket.emit("error", { message: "Missing userId or roomId" });
           return;
         }
 
-        // ✅ Find user's active game
-        const activeGame = await Game.findOne({
-          "players.userId": userId,
-          phase: { $in: ["waiting", "started", "night", "day"] }
+        const gameRoom = await Game.findOne({ roomId });
+        if (!gameRoom) {
+          socket.emit("error", { message: "Room not found" });
+          return;
+        }
+
+        const player = gameRoom.players.find(p => p.userId.toString() === userId);
+        if (!player) {
+          socket.emit("error", { message: "Player not found in room" });
+          return;
+        }
+
+        // ✅ Reconnect player
+        player.isConnected = true;
+        player.disconnectedAt = null;
+        await gameRoom.save();
+
+        // ✅ Join socket room
+        socket.join(roomId);
+        socket.data.userId = userId;
+        socket.data.roomId = roomId;
+
+        // ✅ Send current game state
+        socket.emit("reconnected_to_game", {
+          roomId: gameRoom.roomId,
+          roomName: gameRoom.roomName,
+          players: gameRoom.players,
+          phase: gameRoom.phase,
+          hostId: gameRoom.hostId,
+          currentTurn: gameRoom.currentTurn
         });
 
-        if (activeGame) {
-          const player = activeGame.players.find(p => p.userId.toString() === userId.toString());
-          
-          socket.join(activeGame.roomId);
-          socket.data.userId = userId;
-          socket.data.roomId = activeGame.roomId;
-
-          socket.emit("reconnected_to_game", {
-            roomId: activeGame.roomId,
-            roomName: activeGame.roomName,
-            phase: activeGame.phase,
-            players: activeGame.players,
-            myRole: player ? player.gameRole : null,
-            isAlive: player ? player.isAlive : false
-          });
-
-          console.log(`🔄 User ${userId} reconnected to game ${activeGame.roomId}`);
-        } else {
-          socket.emit("no_active_game", {
-            message: "No active game found"
+        // ✅ Send role if game started
+        if (player.gameRole) {
+          socket.emit("role_assigned", {
+            role: player.gameRole,
+            title: GAME_CONFIG.ROLE_DESCRIPTIONS[player.gameRole]?.title
           });
         }
+
+        // ✅ Notify other players
+        socket.to(roomId).emit("player_reconnected", {
+          message: `${player.username} reconnected`,
+          username: player.username
+        });
+
+        console.log(`🔄 User ${player.username} reconnected to room ${roomId}`);
       } catch (err) {
-        console.error("❌ reconnect_to_game error:", err.message);
+        console.error(`❌ reconnect_to_game error for ${socket.id}:`, err.message);
         socket.emit("error", { message: "Failed to reconnect to game" });
       }
     });
 
-    // ===== DISCONNECT EVENT =====
-    socket.on("disconnect", (reason) => {
+    // ===== ADMIN/DEBUG EVENTS =====
+    socket.on("admin_get_server_stats", async () => {
+      try {
+        const totalRooms = await Game.countDocuments();
+        const activeRooms = await Game.countDocuments({
+          phase: { $in: ["waiting", "started", "night", "day", "voting"] }
+        });
+        const totalConnections = io.engine.clientsCount;
+
+        socket.emit("server_stats", {
+          totalRooms,
+          activeRooms,
+          totalConnections,
+          activeTimers: timerManager.timers.size,
+          timestamp: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error(`❌ admin_get_server_stats error:`, err.message);
+        socket.emit("error", { message: "Failed to get server stats" });
+      }
+    });
+
+    // ===== DISCONNECT HANDLER =====
+    socket.on("disconnect", async (reason) => {
       console.log(`🔌 Socket ${socket.id} disconnected: ${reason}`);
-      handleDisconnect(socket);
+      await handlePlayerDisconnect(socket);
     });
 
     // ===== ERROR HANDLING =====
     socket.on("error", (error) => {
       console.error(`❌ Socket error from ${socket.id}:`, error);
-      socket.emit("error", { message: "Socket error occurred" });
     });
-
-    // ===== CONNECTION SUCCESS =====
-    console.log(`✅ Socket ${socket.id} fully initialized`);
   });
 
-  // ===== GLOBAL ERROR HANDLING =====
-  io.engine.on("connection_error", (err) => {
-    console.error("❌ Connection error:", err.req, err.code, err.message, err.context);
-  });
-
-  // ===== PERIODIC CLEANUP =====
+  // ===== PERIODIC ROOM SYNC =====
   setInterval(async () => {
     try {
-      // ✅ Clean up old finished games (older than 1 hour)
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-      const deletedGames = await Game.deleteMany({
-        phase: "ended",
-        updatedAt: { $lt: oneHourAgo }
-      });
-
-      if (deletedGames.deletedCount > 0) {
-        console.log(`🧹 Cleaned up ${deletedGames.deletedCount} old finished games`);
-        await sendRooms();
-      }
-
-      // ✅ Clean up empty rooms (shouldn't happen, but safety check)
-      const emptyRooms = await Game.find({
-        $or: [
-          { players: { $size: 0 } },
-          { players: { $exists: false } }
-        ]
-      });
-
-      if (emptyRooms.length > 0) {
-        await Game.deleteMany({
-          $or: [
-            { players: { $size: 0 } },
-            { players: { $exists: false } }
-          ]
-        });
-        console.log(`🧹 Cleaned up ${emptyRooms.length} empty rooms`);
-        await sendRooms();
-      }
-
+      await sendRooms();
     } catch (err) {
-      console.error("❌ Cleanup error:", err.message);
+      console.error('❌ Periodic room sync failed:', err.message);
     }
-  }, 5 * 60 * 1000); // Every 5 minutes
+  }, 30000); // Every 30 seconds
 
-  // ===== STARTUP ROOM SYNC =====
+  // ===== INITIAL ROOM SYNC =====
   setTimeout(async () => {
     try {
       await sendRooms();
@@ -370,10 +350,17 @@ export const socketHandler = (io) => {
       
       // ✅ Notify all connected clients
       io.emit("server_shutdown", {
-        message: "Server is shutting down"
+        message: "Server is shutting down",
+        timestamp: new Date().toISOString()
       });
       
-      // ✅ Close all connections
+      // ✅ Close all connections gracefully
+      const sockets = await io.fetchSockets();
+      for (const socket of sockets) {
+        socket.disconnect(true);
+      }
+      
+      // ✅ Close server
       io.close();
       
       console.log('✅ Cleanup completed');
@@ -382,6 +369,7 @@ export const socketHandler = (io) => {
     }
   };
 
+  // ===== PROCESS EVENT HANDLERS =====
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
   process.on('uncaughtException', (err) => {
