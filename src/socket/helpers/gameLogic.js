@@ -1,4 +1,32 @@
-// src/socket/helpers/gameLogic.js - Complete Game End Logic
+// src/socket/helpers/gameLogic.js - Complete Game Logic with generateRoles
+
+// ===== GENERATE ROLES FUNCTION =====
+export const generateRoles = (playerCount) => {
+  const roles = [];
+  const mafiaCount = Math.max(1, Math.floor(playerCount / 4));
+  
+  console.log(`🎭 Generating roles for ${playerCount} players (${mafiaCount} mafia)`);
+  
+  // Add mafia
+  for (let i = 0; i < mafiaCount; i++) {
+    roles.push("mafia");
+  }
+  
+  // Add special roles (if enough players)
+  if (playerCount >= 4) roles.push("doctor");
+  if (playerCount >= 6) roles.push("detective");
+  
+  // Fill rest with villagers
+  while (roles.length < playerCount) {
+    roles.push("villager");
+  }
+  
+  // Shuffle roles
+  const shuffledRoles = roles.sort(() => Math.random() - 0.5);
+  console.log(`🎲 Role distribution:`, shuffledRoles);
+  
+  return shuffledRoles;
+};
 
 // ===== WIN CONDITION CHECKER =====
 export const checkWinCondition = (gameRoom) => {

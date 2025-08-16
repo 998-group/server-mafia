@@ -1,6 +1,7 @@
 // src/socket/events/gameEvents.js - Enhanced with detailed logging
 import Game from "../../models/Game.js";
 import { GAME_CONFIG } from "../../config/gameConfig.js";
+import { checkWinCondition, calculateGameStats } from "../helpers/gameLogic.js";
 
 export const setupGameEvents = (socket, io, timerManager) => {
 
@@ -439,138 +440,137 @@ export const setupGameEvents = (socket, io, timerManager) => {
       socket.emit("error", { message: "Failed to remove voice" });
     }
   });
+
+  // ===== GAME END MANAGEMENT EVENTS =====
+  socket.on("skip_phase", async ({ roomId, hostId }) => {
+    try {
+      if (!roomId || !hostId) {
+        socket.emit("error", { message: "Missing roomId or hostId" });
+        return;
+      }
+
+      await timerManager.skipPhase(roomId, hostId);
+      
+      socket.emit("phase_skipped", {
+        message: "Phase skipped successfully",
+        roomId
+      });
+
+      console.log(`⏭️ Phase skipped by host ${hostId} in room ${roomId}`);
+    } catch (err) {
+      console.error("❌ skip_phase error:", err.message);
+      socket.emit("error", { message: err.message });
+    }
+  });
+
+  socket.on("force_game_end", async ({ roomId, hostId, winner }) => {
+    try {
+      if (!roomId || !hostId) {
+        socket.emit("error", { message: "Missing roomId or hostId" });
+        return;
+      }
+
+      await timerManager.forceGameEnd(roomId, hostId, winner);
+      
+      socket.emit("game_force_ended", {
+        message: "Game ended by host",
+        roomId,
+        winner
+      });
+
+      console.log(`🛑 Game force ended by host ${hostId} in room ${roomId}`);
+    } catch (err) {
+      console.error("❌ force_game_end error:", err.message);
+      socket.emit("error", { message: err.message });
+    }
+  });
+
+  socket.on("restart_game", async ({ roomId, hostId }) => {
+    try {
+      if (!roomId || !hostId) {
+        socket.emit("error", { message: "Missing roomId or hostId" });
+        return;
+      }
+
+      await timerManager.restartGame(roomId, hostId);
+      
+      socket.emit("game_restarted_confirm", {
+        message: "Game restarted successfully",
+        roomId
+      });
+
+      console.log(`🔄 Game restarted by host ${hostId} in room ${roomId}`);
+    } catch (err) {
+      console.error("❌ restart_game error:", err.message);
+      socket.emit("error", { message: err.message });
+    }
+  });
+
+  // ===== WIN CONDITION CHECK EVENT =====
+  socket.on("check_win_condition", async ({ roomId }) => {
+    try {
+      if (!roomId) {
+        socket.emit("error", { message: "Missing roomId" });
+        return;
+      }
+
+      const gameRoom = await Game.findOne({ roomId });
+      if (!gameRoom) {
+        socket.emit("error", { message: "Room not found" });
+        return;
+      }
+
+      const winner = checkWinCondition(gameRoom);
+      
+      socket.emit("win_condition_result", {
+        winner,
+        alivePlayers: gameRoom.players.filter(p => p.isAlive).length,
+        aliveMafia: gameRoom.players.filter(p => p.isAlive && p.gameRole === "mafia").length,
+        aliveVillagers: gameRoom.players.filter(p => p.isAlive && p.gameRole !== "mafia").length
+      });
+
+      console.log(`🎯 Win condition checked for room ${roomId}: ${winner || 'Game continues'}`);
+    } catch (err) {
+      console.error("❌ check_win_condition error:", err.message);
+      socket.emit("error", { message: "Failed to check win condition" });
+    }
+  });
+
+  // ===== GAME STATISTICS EVENT =====
+  socket.on("get_game_stats", async ({ roomId }) => {
+    try {
+      if (!roomId) {
+        socket.emit("error", { message: "Missing roomId" });
+        return;
+      }
+
+      const gameRoom = await Game.findOne({ roomId });
+      if (!gameRoom) {
+        socket.emit("error", { message: "Room not found" });
+        return;
+      }
+
+      const stats = calculateGameStats(gameRoom);
+      
+      socket.emit("game_statistics", {
+        roomId,
+        phase: gameRoom.phase,
+        turn: gameRoom.currentTurn,
+        winner: gameRoom.winner,
+        stats,
+        players: gameRoom.players.map(p => ({
+          id: p.userId.toString(),
+          username: p.username,
+          role: gameRoom.phase === "ended" ? p.gameRole : "hidden", // Only show roles after game ends
+          isAlive: p.isAlive,
+          votes: p.votes || 0
+        }))
+      });
+
+      console.log(`📊 Game stats sent for room ${roomId}`);
+    } catch (err) {
+      console.error("❌ get_game_stats error:", err.message);
+      socket.emit("error", { message: "Failed to get game statistics" });
+    }
+  });
 };
-
-
-// ===== GAME END MANAGEMENT EVENTS =====
-socket.on("skip_phase", async ({ roomId, hostId }) => {
-  try {
-    if (!roomId || !hostId) {
-      socket.emit("error", { message: "Missing roomId or hostId" });
-      return;
-    }
-
-    await timerManager.skipPhase(roomId, hostId);
-    
-    socket.emit("phase_skipped", {
-      message: "Phase skipped successfully",
-      roomId
-    });
-
-    console.log(`⏭️ Phase skipped by host ${hostId} in room ${roomId}`);
-  } catch (err) {
-    console.error("❌ skip_phase error:", err.message);
-    socket.emit("error", { message: err.message });
-  }
-});
-
-socket.on("force_game_end", async ({ roomId, hostId, winner }) => {
-  try {
-    if (!roomId || !hostId) {
-      socket.emit("error", { message: "Missing roomId or hostId" });
-      return;
-    }
-
-    await timerManager.forceGameEnd(roomId, hostId, winner);
-    
-    socket.emit("game_force_ended", {
-      message: "Game ended by host",
-      roomId,
-      winner
-    });
-
-    console.log(`🛑 Game force ended by host ${hostId} in room ${roomId}`);
-  } catch (err) {
-    console.error("❌ force_game_end error:", err.message);
-    socket.emit("error", { message: err.message });
-  }
-});
-
-socket.on("restart_game", async ({ roomId, hostId }) => {
-  try {
-    if (!roomId || !hostId) {
-      socket.emit("error", { message: "Missing roomId or hostId" });
-      return;
-    }
-
-    await timerManager.restartGame(roomId, hostId);
-    
-    socket.emit("game_restarted_confirm", {
-      message: "Game restarted successfully",
-      roomId
-    });
-
-    console.log(`🔄 Game restarted by host ${hostId} in room ${roomId}`);
-  } catch (err) {
-    console.error("❌ restart_game error:", err.message);
-    socket.emit("error", { message: err.message });
-  }
-});
-
-// ===== WIN CONDITION CHECK EVENT =====
-socket.on("check_win_condition", async ({ roomId }) => {
-  try {
-    if (!roomId) {
-      socket.emit("error", { message: "Missing roomId" });
-      return;
-    }
-
-    const gameRoom = await Game.findOne({ roomId });
-    if (!gameRoom) {
-      socket.emit("error", { message: "Room not found" });
-      return;
-    }
-
-    const winner = checkWinCondition(gameRoom);
-    
-    socket.emit("win_condition_result", {
-      winner,
-      alivePlayers: gameRoom.players.filter(p => p.isAlive).length,
-      aliveMafia: gameRoom.players.filter(p => p.isAlive && p.gameRole === "mafia").length,
-      aliveVillagers: gameRoom.players.filter(p => p.isAlive && p.gameRole !== "mafia").length
-    });
-
-    console.log(`🎯 Win condition checked for room ${roomId}: ${winner || 'Game continues'}`);
-  } catch (err) {
-    console.error("❌ check_win_condition error:", err.message);
-    socket.emit("error", { message: "Failed to check win condition" });
-  }
-});
-
-// ===== GAME STATISTICS EVENT =====
-socket.on("get_game_stats", async ({ roomId }) => {
-  try {
-    if (!roomId) {
-      socket.emit("error", { message: "Missing roomId" });
-      return;
-    }
-
-    const gameRoom = await Game.findOne({ roomId });
-    if (!gameRoom) {
-      socket.emit("error", { message: "Room not found" });
-      return;
-    }
-
-    const stats = calculateGameStats(gameRoom);
-    
-    socket.emit("game_statistics", {
-      roomId,
-      phase: gameRoom.phase,
-      turn: gameRoom.currentTurn,
-      winner: gameRoom.winner,
-      stats,
-      players: gameRoom.players.map(p => ({
-        id: p.userId.toString(),
-        username: p.username,
-        role: gameRoom.phase === "ended" ? p.gameRole : "hidden", // Only show roles after game ends
-        isAlive: p.isAlive,
-        votes: p.votes || 0
-      }))
-    });
-
-    console.log(`📊 Game stats sent for room ${roomId}`);
-  } catch (err) {
-    console.error("❌ get_game_stats error:", err.message);
-    socket.emit("error", { message: "Failed to get game statistics" });
-  }
-});
