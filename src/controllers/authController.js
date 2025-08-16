@@ -82,3 +82,47 @@ export const getAllUsers = async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 };
+
+export const getUserCoins = async (req, res) => {
+  try {
+    const user = await UserMafia.findById(req.userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    
+    res.json({ coins: user.coins });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const addCoins = async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const user = await UserMafia.findByIdAndUpdate(
+      req.userId,
+      { $inc: { coins: amount } },
+      { new: true }
+    );
+    
+    res.json({ coins: user.coins });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const deductCoins = async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const user = await UserMafia.findById(req.userId);
+    
+    if (user.coins < amount) {
+      return res.status(400).json({ message: "Not enough coins" });
+    }
+    
+    user.coins -= amount;
+    await user.save();
+    
+    res.json({ coins: user.coins });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

@@ -1,5 +1,5 @@
 import express from "express";
-import { register, login, getAllUsers } from "../controllers/authController.js";
+import { register, login, getAllUsers, getUserCoins, addCoins, deductCoins } from "../controllers/authController.js";
 import verifyToken from "../middlewares/verifyToken.js";
 
 
@@ -90,5 +90,78 @@ router.post('/login', login);
  *                     type: string
  */
 router.get('/users/all', getAllUsers); // 🔒 Token kerak
+
+/**
+ * @swagger
+ * /api/auth/coins:
+ *   get:
+ *     summary: Get user's coin balance
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User's coin balance
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 coins:
+ *                   type: number
+ */
+router.get('/coins', verifyToken, getUserCoins);
+
+/**
+ * @swagger
+ * /api/auth/coins/add:
+ *   post:
+ *     summary: Add coins to user's balance
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - amount
+ *             properties:
+ *               amount:
+ *                 type: number
+ *     responses:
+ *       200:
+ *         description: Coins added successfully
+ */
+router.post('/coins/add', verifyToken, addCoins);
+
+/**
+ * @swagger
+ * /api/auth/coins/deduct:
+ *   post:
+ *     summary: Deduct coins from user's balance
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - amount
+ *             properties:
+ *               amount:
+ *                 type: number
+ *     responses:
+ *       200:
+ *         description: Coins deducted successfully
+ *       400:
+ *         description: Not enough coins
+ */
+router.post('/coins/deduct', verifyToken, deductCoins);
 
 export default router;
