@@ -1,299 +1,454 @@
-// src/socket/helpers/timerManager.js - Enhanced with complete game end logic
+// src/socket/helpers/timerManager.js - Timer Management System
+
 import Game from "../../models/Game.js";
 import { GAME_CONFIG } from "../../config/gameConfig.js";
-import { 
-  resetNightActions, 
-  resetDayVotes, 
-  processNightActions, 
-  processDayVoting, 
-  checkWinCondition, 
-  handleGameEnd,
-  resetGameForNewRound 
-} from "./gameLogic.js";
+import { checkWinConditions } from "./gameLogic.js";
 
-const PHASE_DURATIONS = GAME_CONFIG.PHASE_DURATIONS;
-
-export class TimerManager {
+class TimerManager {
   constructor(io) {
     this.io = io;
-    this.roomTimers = {};
+    this.timers = new Map(); // roomId -> timer info
+    this.intervals = new Map(); // roomId -> interval ID
+    console.log('⏱️ Timer Manager initialized');
   }
 
-  startRoomTimer = async (roomId, durationInSeconds) => {
-    if (!durationInSeconds) return;
+  // ===== START ROOM TIMER =====
+  startRoomTimer(roomId, duration) {
+    try {
+      if (!roomId || !duration || duration <= 0) {
+        console.error('❌ Invalid timer parameters:', { roomId, duration });
+        return false;
+      }
 
-    console.log(`⏱️ Timer started for ${roomId} for ${durationInSeconds} seconds`);
+      // ✅ Clear existing timer
+      this.clearRoomTimer(roomId);
 
-    if (this.roomTimers[roomId]?.interval) {
-      clearInterval(this.roomTimers[roomId].interval);
+      const startTime = Date.now();
+      const endTime = startTime + duration;
+
+      // ✅ Store timer info
+      this.timers.set(roomId, {
+        startTime,
+        endTime,
+        duration,
+        roomId
+      });
+
+      // ✅ Create countdown interval
+      const intervalId = setInterval(() => {
+        this.updateTimer(roomId);
+      }, 1000);
+
+      this.intervals.set(roomId, intervalId);
+
+      // ✅ Set main timer
+      const timerId = setTimeout(async () => {
+        await this.handleTimerExpiry(roomId);
+      }, duration);
+
+      // ✅ Store timeout ID in timer info
+      const timerInfo = this.timers.get(roomId);
+      if (timerInfo) {
+        timerInfo.timerId = timerId;
+        this.timers.set(roomId, timerInfo);
+      }
+
+      console.log(`⏱️ Timer started for room ${roomId}: ${duration}ms`);
+      
+      // ✅ Notify clients immediately
+      this.io.to(roomId).emit("timer_started", {
+        duration,
+        timeLeft: duration,
+        endTime
+      });
+
+      return true;
+    } catch (err) {
+      console.error('❌ Error starting timer:', err.message);
+      return false;
     }
+  }
 
-    this.roomTimers[roomId] = {
-      timeLeft: durationInSeconds,
-      interval: null,
-    };
+  // ===== UPDATE TIMER =====
+  updateTimer(roomId) {
+    try {
+      const timerInfo = this.timers.get(roomId);
+      if (!timerInfo) return;
 
-    this.roomTimers[roomId].interval = setInterval(async () => {
-      const timer = this.roomTimers[roomId];
-      if (!timer) return;
+      const now = Date.now();
+      const timeLeft = Math.max(0, timerInfo.endTime - now);
 
-      if (timer.timeLeft <= 0) {
-        await this.handlePhaseEnd(roomId);
+      // ✅ Send update to room
+      this.io.to(roomId).emit("timer_update", {
+        timeLeft: Math.floor(timeLeft / 1000),
+        totalDuration: timerInfo.duration
+      });
+
+      // ✅ Clear interval if time is up
+      if (timeLeft <= 0) {
+        const intervalId = this.intervals.get(roomId);
+        if (intervalId) {
+          clearInterval(intervalId);
+          this.intervals.delete(roomId);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error updating timer:', err.message);
+    }
+  }
+
+  // ===== HANDLE TIMER EXPIRY =====
+  async handleTimerExpiry(roomId) {
+    try {
+      console.log(`⏰ Timer expired for room ${roomId}`);
+      
+      const gameRoom = await Game.findOne({ roomId });
+      if (!gameRoom) {
+        console.error(`❌ Room ${roomId} not found during timer expiry`);
         return;
       }
 
-      this.io.to(roomId).emit("timer_update", { timeLeft: timer.timeLeft });
-      timer.timeLeft--;
-    }, 1000);
-  };
+      // ✅ Clear timer
+      this.clearRoomTimer(roomId);
 
-  handlePhaseEnd = async (roomId) => {
-    clearInterval(this.roomTimers[roomId].interval);
-    delete this.roomTimers[roomId];
-
-    this.io.to(roomId).emit("timer_end");
-
-    try {
-      const gameRoom = await Game.findOne({ roomId });
-      if (!gameRoom) return;
-
-      console.log(`⏰ Phase ${gameRoom.phase} ended for room ${roomId}`);
-
-      let nextPhase = null;
-      let winner = null;
-      
+      // ✅ Handle phase transition based on current phase
       switch (gameRoom.phase) {
-        case "started":
-          // Game just started, move to first night
-          nextPhase = "night";
-          resetNightActions(gameRoom);
-          this.io.to(roomId).emit("phase_transition", {
-            from: "started",
-            to: "night",
-            message: "🌙 Night falls... Special roles may now act."
-          });
+        case 'night':
+          await this.handleNightPhaseEnd(gameRoom);
           break;
-          
-        case "night":
-          // Process night actions first
-          await processNightActions(gameRoom, this.io, roomId);
-          
-          // Check for win condition after night
-          winner = checkWinCondition(gameRoom);
-          if (winner) {
-            await handleGameEnd(gameRoom, this.io, roomId, winner);
-            return; // Game ended, no more phases
-          }
-          
-          // Move to day phase
-          nextPhase = "day";
-          resetDayVotes(gameRoom);
-          this.io.to(roomId).emit("phase_transition", {
-            from: "night",
-            to: "day",
-            message: "☀️ Dawn breaks... Time for village discussion and voting."
-          });
+        case 'day':
+          await this.handleDayPhaseEnd(gameRoom);
           break;
-          
-        case "day":
-          // Process voting first
-          const someoneWasLynched = await processDayVoting(gameRoom, this.io, roomId);
-          
-          // Check for win condition after voting
-          winner = checkWinCondition(gameRoom);
-          if (winner) {
-            await handleGameEnd(gameRoom, this.io, roomId, winner);
-            return; // Game ended, no more phases
-          }
-          
-          // Move to next night
-          nextPhase = "night";
-          gameRoom.currentTurn += 1;
-          resetNightActions(gameRoom);
-          this.io.to(roomId).emit("phase_transition", {
-            from: "day",
-            to: "night",
-            message: `🌙 Night ${gameRoom.currentTurn + 1} begins... Special roles act again.`,
-            turn: gameRoom.currentTurn
-          });
+        case 'voting':
+          await this.handleVotingPhaseEnd(gameRoom);
           break;
-          
-        case "ended":
-          // Game is over, handle restart if requested
-          console.log(`🏁 Game ${roomId} has ended`);
-          return;
-          
         default:
-          console.error(`❌ Unknown phase: ${gameRoom.phase}`);
-          return;
-      }
-
-      // Update game phase
-      if (nextPhase) {
-        gameRoom.phase = nextPhase;
-        await gameRoom.save();
-
-        // Emit phase change
-        this.io.to(roomId).emit("phase_changed", {
-          phase: nextPhase,
-          turn: gameRoom.currentTurn,
-          timestamp: new Date().toISOString()
-        });
-
-        // Start timer for next phase
-        const nextDuration = this.getPhaseDuration(nextPhase);
-        if (nextDuration > 0) {
-          await this.startRoomTimer(roomId, nextDuration);
-        }
+          console.log(`⚠️ Timer expired in unexpected phase: ${gameRoom.phase}`);
       }
 
     } catch (err) {
-      console.error("❌ handlePhaseEnd error:", err.message);
-      this.io.to(roomId).emit("error", { 
-        message: "Failed to process phase end" 
-      });
+      console.error('❌ Error handling timer expiry:', err.message);
     }
-  };
+  }
 
-  // Get phase duration from config
-  getPhaseDuration = (phase) => {
-    switch (phase) {
-      case "night":
-        return PHASE_DURATIONS?.NIGHT || 60; // 1 minute default
-      case "day":
-        return PHASE_DURATIONS?.DAY || 120; // 2 minutes default
-      case "started":
-        return PHASE_DURATIONS?.STARTED || 10; // 10 seconds to show roles
-      default:
-        return 0;
-    }
-  };
-
-  // Manual phase skip (for host)
-  skipPhase = async (roomId, hostId) => {
+  // ===== HANDLE NIGHT PHASE END =====
+  async handleNightPhaseEnd(gameRoom) {
     try {
-      const gameRoom = await Game.findOne({ roomId });
-      if (!gameRoom) {
-        throw new Error("Room not found");
-      }
+      console.log(`🌙 Night phase ending in room ${gameRoom.roomId}`);
 
-      if (gameRoom.hostId.toString() !== hostId.toString()) {
-        throw new Error("Only host can skip phases");
-      }
+      // ✅ Process night actions
+      await this.processNightActions(gameRoom);
 
-      console.log(`⏭️ Host ${hostId} skipped phase ${gameRoom.phase} in room ${roomId}`);
-      
-      // Clear current timer
-      if (this.roomTimers[roomId]) {
-        clearInterval(this.roomTimers[roomId].interval);
-        delete this.roomTimers[roomId];
-      }
-
-      // Process phase end immediately
-      await this.handlePhaseEnd(roomId);
-      
-    } catch (err) {
-      console.error("❌ skipPhase error:", err.message);
-      throw err;
-    }
-  };
-
-  // Force game end (for host)
-  forceGameEnd = async (roomId, hostId, winner = null) => {
-    try {
-      const gameRoom = await Game.findOne({ roomId });
-      if (!gameRoom) {
-        throw new Error("Room not found");
-      }
-
-      if (gameRoom.hostId.toString() !== hostId.toString()) {
-        throw new Error("Only host can force game end");
-      }
-
-      console.log(`🛑 Host ${hostId} forced game end in room ${roomId}`);
-      
-      // Clear timer
-      this.clearRoomTimer(roomId);
-      
-      // Determine winner if not specified
-      if (!winner) {
-        winner = checkWinCondition(gameRoom) || "draw";
-      }
-
-      await handleGameEnd(gameRoom, this.io, roomId, winner);
-      
-    } catch (err) {
-      console.error("❌ forceGameEnd error:", err.message);
-      throw err;
-    }
-  };
-
-  // Restart game (for host)
-  restartGame = async (roomId, hostId) => {
-    try {
-      const gameRoom = await Game.findOne({ roomId });
-      if (!gameRoom) {
-        throw new Error("Room not found");
-      }
-
-      if (gameRoom.hostId.toString() !== hostId.toString()) {
-        throw new Error("Only host can restart game");
-      }
-
-      console.log(`🔄 Host ${hostId} restarted game in room ${roomId}`);
-      
-      // Clear any existing timer
-      this.clearRoomTimer(roomId);
-      
-      // Reset game state
-      resetGameForNewRound(gameRoom);
+      // ✅ Transition to day phase
+      gameRoom.phase = 'day';
+      gameRoom.hasMafiaKilled = false;
+      gameRoom.hasDoctorHealed = false;
+      gameRoom.hasDetectiveChecked = false;
+      gameRoom.updatedAt = new Date();
       await gameRoom.save();
 
-      // Notify all players
-      this.io.to(roomId).emit("game_restarted", {
-        message: "🔄 Game has been restarted by the host.",
-        roomId: gameRoom.roomId,
+      // ✅ Notify clients
+      this.io.to(gameRoom.roomId).emit("phase_changed", {
+        newPhase: 'day',
+        message: 'Day phase has begun. Discuss and vote!',
         players: gameRoom.players
       });
 
-      this.io.to(roomId).emit("phase_changed", {
-        phase: "waiting",
-        turn: 0
-      });
-      
+      this.io.to(gameRoom.roomId).emit("update_players", gameRoom.players);
+
+      // ✅ Start day timer
+      const dayDuration = GAME_CONFIG.PHASE_DURATIONS?.day || 120000;
+      this.startRoomTimer(gameRoom.roomId, dayDuration);
+
     } catch (err) {
-      console.error("❌ restartGame error:", err.message);
+      console.error('❌ Error handling night phase end:', err.message);
+    }
+  }
+
+  // ===== HANDLE DAY PHASE END =====
+  async handleDayPhaseEnd(gameRoom) {
+    try {
+      console.log(`☀️ Day phase ending in room ${gameRoom.roomId}`);
+
+      // ✅ Transition to voting phase
+      gameRoom.phase = 'voting';
+      
+      // ✅ Reset voting flags
+      gameRoom.players.forEach(player => {
+        player.hasVoted = false;
+        player.votes = 0;
+      });
+
+      gameRoom.updatedAt = new Date();
+      await gameRoom.save();
+
+      // ✅ Notify clients
+      this.io.to(gameRoom.roomId).emit("phase_changed", {
+        newPhase: 'voting',
+        message: 'Voting phase has begun. Cast your votes!',
+        players: gameRoom.players
+      });
+
+      this.io.to(gameRoom.roomId).emit("update_players", gameRoom.players);
+
+      // ✅ Start voting timer
+      const votingDuration = GAME_CONFIG.PHASE_DURATIONS?.voting || 60000;
+      this.startRoomTimer(gameRoom.roomId, votingDuration);
+
+    } catch (err) {
+      console.error('❌ Error handling day phase end:', err.message);
+    }
+  }
+
+  // ===== HANDLE VOTING PHASE END =====
+  async handleVotingPhaseEnd(gameRoom) {
+    try {
+      console.log(`🗳️ Voting phase ending in room ${gameRoom.roomId}`);
+
+      // ✅ Process voting results
+      await this.processVotingResults(gameRoom);
+
+      // ✅ Check win conditions
+      const winner = this.checkWinConditions(gameRoom);
+      
+      if (winner) {
+        // ✅ Game ends
+        gameRoom.phase = 'ended';
+        gameRoom.winner = winner;
+        gameRoom.updatedAt = new Date();
+        await gameRoom.save();
+
+        this.io.to(gameRoom.roomId).emit("game_ended", {
+          winner,
+          message: `${winner} wins the game!`,
+          players: gameRoom.players
+        });
+      } else {
+        // ✅ Continue to next night
+        gameRoom.phase = 'night';
+        gameRoom.currentTurn = (gameRoom.currentTurn || 1) + 1;
+        
+        // ✅ Reset night action flags
+        gameRoom.hasMafiaKilled = false;
+        gameRoom.hasDoctorHealed = false;
+        gameRoom.hasDetectiveChecked = false;
+        gameRoom.mafiaTarget = null;
+        gameRoom.doctorTarget = null;
+        
+        gameRoom.updatedAt = new Date();
+        await gameRoom.save();
+
+        this.io.to(gameRoom.roomId).emit("phase_changed", {
+          newPhase: 'night',
+          currentTurn: gameRoom.currentTurn,
+          message: 'Night falls. Special roles, make your moves!',
+          players: gameRoom.players
+        });
+
+        // ✅ Start night timer
+        const nightDuration = GAME_CONFIG.PHASE_DURATIONS?.night || 60000;
+        this.startRoomTimer(gameRoom.roomId, nightDuration);
+      }
+
+    } catch (err) {
+      console.error('❌ Error handling voting phase end:', err.message);
+    }
+  }
+
+  // ===== PROCESS NIGHT ACTIONS =====
+  async processNightActions(gameRoom) {
+    try {
+      const actions = [];
+
+      // ✅ Process mafia kill
+      if (gameRoom.mafiaTarget) {
+        const target = gameRoom.players.find(p => p.userId.toString() === gameRoom.mafiaTarget.toString());
+        if (target && target.isAlive) {
+          // ✅ Check if target was healed
+          if (!target.isHealed) {
+            target.isAlive = false;
+            actions.push(`${target.username} was eliminated by the mafia`);
+          } else {
+            actions.push(`Someone was attacked but saved by the doctor!`);
+            target.isHealed = false; // Reset heal status
+          }
+        }
+      }
+
+      // ✅ Reset heal status for all players
+      gameRoom.players.forEach(player => {
+        player.isHealed = false;
+      });
+
+      // ✅ Notify about night actions
+      if (actions.length > 0) {
+        this.io.to(gameRoom.roomId).emit("night_actions_result", {
+          actions,
+          message: "Night actions have been processed"
+        });
+      } else {
+        this.io.to(gameRoom.roomId).emit("night_actions_result", {
+          actions: ["The night was peaceful"],
+          message: "No one was harmed during the night"
+        });
+      }
+
+      gameRoom.updatedAt = new Date();
+      await gameRoom.save();
+
+    } catch (err) {
+      console.error('❌ Error processing night actions:', err.message);
+    }
+  }
+
+  // ===== PROCESS VOTING RESULTS =====
+  async processVotingResults(gameRoom) {
+    try {
+      const alivePlayers = gameRoom.players.filter(p => p.isAlive);
+      const votedPlayers = alivePlayers.filter(p => (p.votes || 0) > 0);
+      
+      if (votedPlayers.length === 0) {
+        this.io.to(gameRoom.roomId).emit("voting_result", {
+          message: "No one was eliminated - no votes cast",
+          eliminatedPlayer: null
+        });
+        return;
+      }
+
+      // ✅ Find player with most votes
+      const maxVotes = Math.max(...votedPlayers.map(p => p.votes));
+      const playersWithMaxVotes = votedPlayers.filter(p => p.votes === maxVotes);
+      
+      if (playersWithMaxVotes.length > 1) {
+        // ✅ Tie - no elimination
+        this.io.to(gameRoom.roomId).emit("voting_result", {
+          message: `Voting tied between ${playersWithMaxVotes.map(p => p.username).join(', ')} - no elimination`,
+          eliminatedPlayer: null,
+          tiedPlayers: playersWithMaxVotes.map(p => p.username)
+        });
+      } else {
+        // ✅ Eliminate player with most votes
+        const eliminatedPlayer = playersWithMaxVotes[0];
+        eliminatedPlayer.isAlive = false;
+        
+        this.io.to(gameRoom.roomId).emit("voting_result", {
+          message: `${eliminatedPlayer.username} was eliminated by vote`,
+          eliminatedPlayer: {
+            username: eliminatedPlayer.username,
+            role: eliminatedPlayer.gameRole
+          }
+        });
+      }
+
+      // ✅ Reset voting for next round
+      gameRoom.players.forEach(player => {
+        player.hasVoted = false;
+        player.votes = 0;
+      });
+
+      gameRoom.updatedAt = new Date();
+      await gameRoom.save();
+
+    } catch (err) {
+      console.error('❌ Error processing voting results:', err.message);
+    }
+  }
+
+  // ===== CHECK WIN CONDITIONS =====
+  checkWinConditions(gameRoom) {
+    return checkWinConditions(gameRoom.players);
+  }
+
+  // ===== GET TIME LEFT =====
+  getTimeLeftForRoom(roomId) {
+    const timerInfo = this.timers.get(roomId);
+    if (!timerInfo) return null;
+    
+    const now = Date.now();
+    const timeLeft = Math.max(0, timerInfo.endTime - now);
+    return Math.floor(timeLeft / 1000);
+  }
+
+  // ===== CLEAR ROOM TIMER =====
+  clearRoomTimer(roomId) {
+    try {
+      // ✅ Clear timeout
+      const timerInfo = this.timers.get(roomId);
+      if (timerInfo && timerInfo.timerId) {
+        clearTimeout(timerInfo.timerId);
+      }
+      
+      // ✅ Clear interval
+      const intervalId = this.intervals.get(roomId);
+      if (intervalId) {
+        clearInterval(intervalId);
+        this.intervals.delete(roomId);
+      }
+      
+      // ✅ Remove timer info
+      this.timers.delete(roomId);
+      
+      console.log(`⏱️ Timer cleared for room ${roomId}`);
+      return true;
+    } catch (err) {
+      console.error('❌ Error clearing timer:', err.message);
+      return false;
+    }
+  }
+
+  // ===== CLEAR ALL TIMERS =====
+  clearAllTimers() {
+    try {
+      console.log('🛑 Clearing all timers...');
+      
+      // ✅ Clear all timeouts
+      for (const [roomId, timerInfo] of this.timers) {
+        if (timerInfo.timerId) {
+          clearTimeout(timerInfo.timerId);
+        }
+      }
+      
+      // ✅ Clear all intervals
+      for (const [roomId, intervalId] of this.intervals) {
+        clearInterval(intervalId);
+      }
+      
+      // ✅ Clear maps
+      this.timers.clear();
+      this.intervals.clear();
+      
+      console.log('✅ All timers cleared');
+    } catch (err) {
+      console.error('❌ Error clearing all timers:', err.message);
+    }
+  }
+
+  // ===== SKIP PHASE (HOST ONLY) =====
+  async skipPhase(roomId, hostId) {
+    try {
+      const gameRoom = await Game.findOne({ roomId });
+      if (!gameRoom) {
+        throw new Error("Room not found");
+      }
+
+      if (gameRoom.hostId.toString() !== hostId.toString()) {
+        throw new Error("Only the host can skip phases");
+      }
+
+      console.log(`⏭️ Host ${hostId} skipping phase in room ${roomId}`);
+      
+      // ✅ Clear current timer
+      this.clearRoomTimer(roomId);
+      
+      // ✅ Trigger immediate phase end
+      await this.handleTimerExpiry(roomId);
+      
+      return true;
+    } catch (err) {
+      console.error('❌ Error skipping phase:', err.message);
       throw err;
     }
-  };
-
-  // Utility methods
-  getTimeLeftForRoom = (roomId) => {
-    return this.roomTimers[roomId]?.timeLeft || null;
-  };
-
-  clearRoomTimer = (roomId) => {
-    if (this.roomTimers[roomId]) {
-      clearInterval(this.roomTimers[roomId].interval);
-      delete this.roomTimers[roomId];
-      console.log(`🧹 Timer cleared for room ${roomId}`);
-    }
-  };
-
-  clearAllTimers = () => {
-    Object.keys(this.roomTimers).forEach(roomId => {
-      this.clearRoomTimer(roomId);
-    });
-    console.log("🧹 All timers cleared");
-  };
-
-  // Check if room has active timer
-  hasActiveTimer = (roomId) => {
-    return !!this.roomTimers[roomId];
-  };
-
-  // Get all active rooms with timers
-  getActiveRooms = () => {
-    return Object.keys(this.roomTimers);
-  };
+  }
 }
+
+export default TimerManager;

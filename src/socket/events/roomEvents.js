@@ -1,4 +1,5 @@
-// src/socket/events/roomEvents.js - Complete Full Code
+// src/socket/events/roomEvents.js - Complete Fixed Version
+
 import Game from "../../models/Game.js";
 import User from "../../models/User.js";
 import uniqId from "uniqid";
@@ -12,31 +13,43 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
     try {
       console.log(`🏠 Creating room: ${data.roomName} by ${data.hostId}`);
       
+      // ✅ Input validation
       if (!data.hostId || !data.roomName) {
         socket.emit("error", { message: "Missing hostId or roomName" });
         return;
       }
 
-      // ✅ Host user mavjudligini tekshirish
+      // ✅ Validate room name
+      const trimmedName = data.roomName.trim();
+      if (!trimmedName || trimmedName.length < 3 || trimmedName.length > 30) {
+        socket.emit("error", { message: "Room name must be between 3-30 characters" });
+        return;
+      }
+
+      // ✅ Check if host user exists
       const owner = await User.findById(data.hostId);
       if (!owner) {
         socket.emit("error", { message: "Host user not found" });
         return;
       }
 
-      // ✅ User boshqa roomda emasligini tekshirish
+      // ✅ Check if user is already in another active room
       const existingRoom = await Game.findOne({ 
-        "players.userId": data.hostId 
+        "players.userId": data.hostId,
+        phase: { $in: ["waiting", "started", "night", "day"] }
       });
+      
       if (existingRoom) {
-        console.log(`❌ User ${owner.username} already in room ${existingRoom.roomId}`);
-        socket.emit("error", { message: "You are already in another room" });
+        console.log(`❌ User ${owner.username} already in active room ${existingRoom.roomId}`);
+        socket.emit("error", { message: "You are already in another active room" });
         return;
       }
 
+      // ✅ Create new room
+      const roomId = uniqId();
       const newRoom = await Game.create({
-        roomId: uniqId(),
-        roomName: data.roomName,
+        roomId,
+        roomName: trimmedName,
         players: [
           {
             userId: owner._id,
@@ -47,6 +60,7 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
             isHealed: false,
             hasVoted: false,
             voice: [],
+            gameRole: null
           },
         ],
         hostId: data.hostId,
@@ -56,20 +70,42 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
         hasDetectiveChecked: false,
         mafiaTarget: null,
         doctorTarget: null,
+        currentTurn: 1,
+        winner: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
       });
 
-      socket.join(newRoom.roomId);
+      // ✅ Socket setup
+      socket.join(roomId);
       socket.data.userId = data.hostId;
-      socket.data.roomId = newRoom.roomId;
+      socket.data.roomId = roomId;
 
-      socket.emit("joined_room", newRoom);
-      io.to(newRoom.roomId).emit("update_players", newRoom.players);
-      io.to(newRoom.roomId).emit("game_phase", newRoom);
-      await sendRooms();
+      // ✅ Send response
+      const responseRoom = {
+        roomId: newRoom.roomId,
+        roomName: newRoom.roomName,
+        players: newRoom.players,
+        phase: newRoom.phase,
+        hostId: newRoom.hostId,
+        currentTurn: newRoom.currentTurn
+      };
 
-      console.log(`✅ Room created: ${newRoom.roomId} by ${owner.username}`);
+      socket.emit("joined_room", responseRoom);
+      io.to(roomId).emit("update_players", newRoom.players);
+      io.to(roomId).emit("game_phase", {
+        phase: newRoom.phase,
+        currentTurn: newRoom.currentTurn,
+        players: newRoom.players,
+        roomName: newRoom.roomName
+      });
+      
+      // ✅ Update room list
+      if (sendRooms) await sendRooms();
+
+      console.log(`✅ Room created successfully: ${roomId} by ${owner.username}`);
     } catch (err) {
-      console.error("❌ create_room error:", err.message);
+      console.error("❌ create_room error:", err.message, err.stack);
       socket.emit("error", { message: "Failed to create room" });
     }
   });
@@ -77,123 +113,114 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
   // ===== JOIN ROOM EVENT =====
   socket.on("join_room", async ({ roomId, userId, username }) => {
     try {
-      console.log(`🚪 User ${username} (${userId}) trying to join room ${roomId}`);
+      console.log(`🚪 User ${username} (${userId}) attempting to join room ${roomId}`);
       
+      // ✅ Input validation
       if (!roomId || !userId || !username) {
+        console.log(`❌ Missing required fields: roomId=${roomId}, userId=${userId}, username=${username}`);
         socket.emit("error", { message: "Missing roomId, userId, or username" });
         return;
       }
 
+      // ✅ Find room
       const gameRoom = await Game.findOne({ roomId });
       if (!gameRoom) {
+        console.log(`❌ Room ${roomId} not found`);
         socket.emit("error", { message: "Room not found" });
         return;
       }
 
-      // Check if game is in progress
+      // ✅ Check game phase
       if (gameRoom.phase !== "waiting") {
+        console.log(`❌ Cannot join room ${roomId}: game in progress (phase: ${gameRoom.phase})`);
         socket.emit("error", { message: "Cannot join room: game is in progress" });
         return;
       }
 
-      // ✅ IMPROVED: Check if already in THIS room
+      // ✅ Check if already in THIS room
       const alreadyInThisRoom = gameRoom.players.some(
         (p) => p.userId.toString() === userId.toString()
       );
 
-      console.log(`🔍 Already in this room (${roomId}): ${alreadyInThisRoom}`);
-      console.log(`📋 Current players:`, gameRoom.players.map(p => ({ 
-        userId: p.userId.toString(), 
-        username: p.username 
-      })));
+      console.log(`🔍 User ${username} already in room ${roomId}: ${alreadyInThisRoom}`);
 
       if (!alreadyInThisRoom) {
-        // ✅ IMPROVED: Check for other rooms with better query
-        const otherRooms = await Game.find({ 
+        // ✅ Check for other active rooms
+        const otherActiveRooms = await Game.find({ 
           "players.userId": userId,
-          roomId: { $ne: roomId },  // Exclude current room
-          $or: [
-            { phase: "waiting" },
-            { phase: "started" },
-            { phase: "night" },
-            { phase: "day" }
-          ]
+          roomId: { $ne: roomId },
+          phase: { $in: ["waiting", "started", "night", "day"] }
         });
 
-        console.log(`🔍 User ${userId} found in ${otherRooms.length} other active rooms`);
-
-        if (otherRooms.length > 0) {
-          console.log(`❌ User ${userId} is in other rooms:`, otherRooms.map(r => r.roomId));
-          
-          // ✅ AUTO-LEAVE: Remove from other rooms
-          for (const otherRoom of otherRooms) {
-            console.log(`🧹 Auto-removing user ${userId} from room ${otherRoom.roomId}`);
-            
-            const wasHostInOtherRoom = otherRoom.hostId.toString() === userId.toString();
-            
-            otherRoom.players = otherRoom.players.filter(
-              (p) => p.userId.toString() !== userId.toString()
-            );
-
-            if (otherRoom.players.length === 0) {
-              await Game.deleteOne({ roomId: otherRoom.roomId });
-              io.to(otherRoom.roomId).emit("room_closed");
-              timerManager.clearRoomTimer(otherRoom.roomId);
-              console.log(`🗑️ Empty room ${otherRoom.roomId} auto-deleted`);
-            } else {
-              // If was host, assign new host
-              if (wasHostInOtherRoom && otherRoom.players.length > 0) {
-                otherRoom.hostId = otherRoom.players[0].userId;
-                io.to(otherRoom.roomId).emit("new_host", { 
-                  newHostId: otherRoom.hostId,
-                  newHostUsername: otherRoom.players[0].username 
-                });
-                console.log(`👑 New host assigned in room ${otherRoom.roomId}: ${otherRoom.players[0].username}`);
-              }
-              await otherRoom.save();
-              io.to(otherRoom.roomId).emit("update_players", otherRoom.players);
-            }
-          }
-          
-          console.log(`✅ User ${userId} auto-cleaned from ${otherRooms.length} rooms`);
+        if (otherActiveRooms.length > 0) {
+          console.log(`❌ User ${username} is in other active rooms:`, otherActiveRooms.map(r => r.roomId));
+          socket.emit("error", { message: "You are already in another active room" });
+          return;
         }
 
         // ✅ Check room capacity
-        if (gameRoom.players.length >= GAME_CONFIG.MAX_PLAYERS) {
+        if (gameRoom.players.length >= (GAME_CONFIG.MAX_PLAYERS || 10)) {
+          console.log(`❌ Room ${roomId} is full (${gameRoom.players.length}/${GAME_CONFIG.MAX_PLAYERS || 10})`);
           socket.emit("error", { message: "Room is full" });
+          return;
+        }
+
+        // ✅ Verify user exists
+        const user = await User.findById(userId);
+        if (!user) {
+          socket.emit("error", { message: "User not found" });
           return;
         }
 
         // ✅ Add player to room
         gameRoom.players.push({
           userId,
-          username,
+          username: user.username,
           isAlive: true,
           isReady: false,
           votes: 0,
           isHealed: false,
           hasVoted: false,
           voice: [],
+          gameRole: null
         });
+        
+        gameRoom.updatedAt = new Date();
         await gameRoom.save();
         console.log(`✅ User ${username} added to room ${roomId}`);
       } else {
-        console.log(`ℹ️ User ${username} already in room ${roomId}, skipping add`);
+        console.log(`ℹ️ User ${username} already in room ${roomId}, reconnecting`);
       }
 
-      // ✅ Always set socket data
+      // ✅ Socket setup (always do this)
       socket.join(roomId);
       socket.data.userId = userId;
       socket.data.roomId = roomId;
 
-      socket.emit("joined_room", gameRoom);
-      io.to(roomId).emit("update_players", gameRoom.players);
-      io.to(roomId).emit("game_phase", gameRoom);
-      await sendRooms();
+      // ✅ Send responses
+      const responseRoom = {
+        roomId: gameRoom.roomId,
+        roomName: gameRoom.roomName,
+        players: gameRoom.players,
+        phase: gameRoom.phase,
+        hostId: gameRoom.hostId,
+        currentTurn: gameRoom.currentTurn
+      };
 
-      console.log(`✅ User ${username} successfully joined room ${roomId}`);
+      socket.emit("joined_room", responseRoom);
+      io.to(roomId).emit("update_players", gameRoom.players);
+      io.to(roomId).emit("game_phase", {
+        phase: gameRoom.phase,
+        currentTurn: gameRoom.currentTurn,
+        players: gameRoom.players,
+        roomName: gameRoom.roomName
+      });
+      
+      if (sendRooms) await sendRooms();
+
+      console.log(`✅ User ${username} successfully joined/reconnected to room ${roomId}`);
     } catch (err) {
-      console.error("❌ join_room error:", err.message);
+      console.error("❌ join_room error:", err.message, err.stack);
       socket.emit("error", { message: "Failed to join room" });
     }
   });
@@ -201,6 +228,8 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
   // ===== READY TOGGLE EVENT =====
   socket.on("ready", async ({ roomId, userId }) => {
     try {
+      console.log(`🔄 User ${userId} toggling ready status in room ${roomId}`);
+      
       if (!roomId || !userId) {
         socket.emit("error", { message: "Missing roomId or userId" });
         return;
@@ -221,12 +250,16 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
         (p) => p.userId.toString() === userId.toString()
       );
       if (!player) {
-        socket.emit("error", { message: "Player not found" });
+        socket.emit("error", { message: "Player not found in room" });
         return;
       }
 
+      // ✅ Toggle ready status
       player.isReady = !player.isReady;
+      gameRoom.updatedAt = new Date();
       await gameRoom.save();
+
+      console.log(`✅ User ${player.username} is now ${player.isReady ? 'ready' : 'not ready'}`);
 
       socket.emit("notification", {
         type: "success",
@@ -235,46 +268,65 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
 
       io.to(roomId).emit("update_players", gameRoom.players);
 
-      // ✅ Check if all players are ready and minimum players requirement
-      const allReady =
-        gameRoom.players.length >= GAME_CONFIG.MIN_PLAYERS && 
-        gameRoom.players.every((p) => p.isReady);
+      // ✅ Check if all players are ready and can start game
+      const minPlayers = GAME_CONFIG.MIN_PLAYERS || 3;
+      const allReady = gameRoom.players.length >= minPlayers && 
+                      gameRoom.players.every((p) => p.isReady);
 
-      console.log(`📊 Ready Check: ${gameRoom.players.length}/${GAME_CONFIG.MIN_PLAYERS} players, All ready: ${allReady}`);
+      console.log(`📊 Ready Check: ${gameRoom.players.length}/${minPlayers} players, All ready: ${allReady}`);
 
       if (allReady && gameRoom.phase === "waiting") {
-        // Shuffle players and assign roles
-        const shuffled = [...gameRoom.players].sort(() => Math.random() - 0.5);
-        const roles = generateRoles(shuffled.length);
+        console.log(`🎮 Starting game in room ${roomId}...`);
         
-        shuffled.forEach((player, i) => {
-          player.gameRole = roles[i];
-          player.isAlive = true;
-          player.isHealed = false;
-          player.votes = 0;
-          player.hasVoted = false;
-        });
+        try {
+          // ✅ Shuffle players and assign roles
+          const shuffled = [...gameRoom.players].sort(() => Math.random() - 0.5);
+          const roles = generateRoles(shuffled.length);
+          
+          shuffled.forEach((player, i) => {
+            player.gameRole = roles[i];
+            player.isAlive = true;
+            player.isHealed = false;
+            player.votes = 0;
+            player.hasVoted = false;
+          });
 
-        gameRoom.phase = "started";
-        gameRoom.hasMafiaKilled = false;
-        gameRoom.hasDoctorHealed = false;
-        gameRoom.hasDetectiveChecked = false;
-        gameRoom.currentTurn = 1;
-        gameRoom.mafiaTarget = null;
-        gameRoom.doctorTarget = null;
-        await gameRoom.save();
+          // ✅ Update game state
+          gameRoom.players = shuffled;
+          gameRoom.phase = "started";
+          gameRoom.hasMafiaKilled = false;
+          gameRoom.hasDoctorHealed = false;
+          gameRoom.hasDetectiveChecked = false;
+          gameRoom.currentTurn = 1;
+          gameRoom.mafiaTarget = null;
+          gameRoom.doctorTarget = null;
+          gameRoom.updatedAt = new Date();
+          
+          await gameRoom.save();
 
-        io.to(roomId).emit("start_game");
-        io.to(roomId).emit("update_players", gameRoom.players);
-        io.to(roomId).emit("game_phase", gameRoom);
+          // ✅ Notify clients
+          io.to(roomId).emit("start_game");
+          io.to(roomId).emit("update_players", gameRoom.players);
+          io.to(roomId).emit("game_phase", {
+            phase: gameRoom.phase,
+            currentTurn: gameRoom.currentTurn,
+            players: gameRoom.players,
+            roomName: gameRoom.roomName
+          });
 
-        // Start with night phase timer
-        timerManager.startRoomTimer(roomId, GAME_CONFIG.PHASE_DURATIONS.night);
-        
-        console.log(`🎮 Game started in room ${roomId} with ${gameRoom.players.length} players (Test Mode: ${GAME_CONFIG.TEST_MODE})`);
+          // ✅ Start night phase timer
+          if (timerManager && GAME_CONFIG.PHASE_DURATIONS) {
+            timerManager.startRoomTimer(roomId, GAME_CONFIG.PHASE_DURATIONS.night || 60000);
+          }
+          
+          console.log(`✅ Game started in room ${roomId} with ${gameRoom.players.length} players`);
+        } catch (gameStartError) {
+          console.error(`❌ Error starting game in room ${roomId}:`, gameStartError.message);
+          socket.emit("error", { message: "Failed to start game" });
+        }
       }
     } catch (err) {
-      console.error("❌ ready error:", err.message);
+      console.error("❌ ready error:", err.message, err.stack);
       socket.emit("error", { message: "Failed to toggle ready status" });
     }
   });
@@ -282,7 +334,7 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
   // ===== LEAVE ROOM EVENT =====
   socket.on("leave_room", async ({ roomId, userId }) => {
     try {
-      console.log(`🚪 User ${userId} trying to leave room ${roomId}`);
+      console.log(`🚪 User ${userId} attempting to leave room ${roomId}`);
       
       if (!roomId || !userId) {
         socket.emit("error", { message: "Missing roomId or userId" });
@@ -297,66 +349,65 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
       }
 
       // ✅ Check if user is actually in this room
-      const playerInRoom = gameRoom.players.find(
+      const playerIndex = gameRoom.players.findIndex(
         (p) => p.userId.toString() === userId.toString()
       );
 
-      if (!playerInRoom) {
+      if (playerIndex === -1) {
         console.log(`❌ User ${userId} not found in room ${roomId}`);
         socket.emit("error", { message: "You are not in this room" });
         return;
       }
 
       const wasHost = gameRoom.hostId.toString() === userId.toString();
-      console.log(`👤 User ${userId} is ${wasHost ? 'HOST' : 'PLAYER'} in room ${roomId}`);
+      const leavingPlayer = gameRoom.players[playerIndex];
       
+      console.log(`👤 User ${leavingPlayer.username} is ${wasHost ? 'host' : 'player'}, leaving room ${roomId}`);
+
       // ✅ Remove player from room
-      gameRoom.players = gameRoom.players.filter(
-        (p) => p.userId.toString() !== userId.toString()
-      );
+      gameRoom.players.splice(playerIndex, 1);
 
-      console.log(`📊 Players after remove: ${gameRoom.players.length}`);
-
+      // ✅ Handle empty room
       if (gameRoom.players.length === 0) {
-        // ✅ Delete empty room completely
+        console.log(`🗑️ Room ${roomId} is empty, deleting...`);
         await Game.deleteOne({ roomId });
-        io.to(roomId).emit("room_closed");
-        timerManager.clearRoomTimer(roomId);
-        console.log(`🗑️ Empty room ${roomId} deleted completely`);
-      } else {
-        // ✅ Assign new host if needed
-        if (wasHost && gameRoom.players.length > 0) {
-          gameRoom.hostId = gameRoom.players[0].userId;
-          io.to(roomId).emit("new_host", { 
-            newHostId: gameRoom.hostId,
-            newHostUsername: gameRoom.players[0].username 
-          });
-          console.log(`👑 New host assigned: ${gameRoom.players[0].username}`);
-        }
-
-        // ✅ Save room changes
-        await gameRoom.save();
-        io.to(roomId).emit("update_players", gameRoom.players);
-        console.log(`💾 Room ${roomId} updated with ${gameRoom.players.length} players`);
+        socket.leave(roomId);
+        io.to(roomId).emit("room_closed", { message: "Room has been closed" });
+        if (sendRooms) await sendRooms();
+        return;
       }
 
-      // ✅ IMPORTANT: Clean up socket data immediately
+      // ✅ Assign new host if needed
+      if (wasHost && gameRoom.players.length > 0) {
+        gameRoom.hostId = gameRoom.players[0].userId;
+        console.log(`👑 New host assigned: ${gameRoom.players[0].username}`);
+        
+        io.to(roomId).emit("new_host", { 
+          newHostId: gameRoom.hostId,
+          newHostUsername: gameRoom.players[0].username 
+        });
+      }
+
+      // ✅ Save and notify
+      gameRoom.updatedAt = new Date();
+      await gameRoom.save();
+      
       socket.leave(roomId);
       socket.data.userId = null;
       socket.data.roomId = null;
-
-      // ✅ Update rooms list
-      await sendRooms();
-
-      // ✅ Confirm leave to user
-      socket.emit("leave_confirmed", { 
-        roomId, 
-        message: "Successfully left the room" 
+      
+      io.to(roomId).emit("update_players", gameRoom.players);
+      io.to(roomId).emit("game_phase", {
+        phase: gameRoom.phase,
+        currentTurn: gameRoom.currentTurn,
+        players: gameRoom.players
       });
+      
+      if (sendRooms) await sendRooms();
 
-      console.log(`✅ User ${userId} successfully left room ${roomId}`);
+      console.log(`✅ User ${leavingPlayer.username} successfully left room ${roomId}`);
     } catch (err) {
-      console.error("❌ leave_room error:", err.message);
+      console.error("❌ leave_room error:", err.message, err.stack);
       socket.emit("error", { message: "Failed to leave room" });
     }
   });
@@ -376,11 +427,18 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
       }
 
       socket.emit("update_players", gameRoom.players);
-      socket.emit("game_phase", gameRoom);
+      socket.emit("game_phase", {
+        phase: gameRoom.phase,
+        currentTurn: gameRoom.currentTurn,
+        players: gameRoom.players,
+        roomName: gameRoom.roomName
+      });
 
-      const timeLeft = timerManager.getTimeLeftForRoom(roomId);
-      if (timeLeft !== null) {
-        socket.emit("timer_update", { timeLeft });
+      if (timerManager) {
+        const timeLeft = timerManager.getTimeLeftForRoom(roomId);
+        if (timeLeft !== null) {
+          socket.emit("timer_update", { timeLeft });
+        }
       }
     } catch (err) {
       console.error("❌ get_players error:", err.message);
@@ -421,104 +479,56 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
     if (!userId) return;
 
     try {
-      // ✅ Find ALL rooms user might be in
-      const userRooms = await Game.find({ "players.userId": userId });
-      
-      for (const gameRoom of userRooms) {
-        console.log(`🧹 Cleaning user ${userId} from room ${gameRoom.roomId}`);
-        
-        const wasHost = gameRoom.hostId.toString() === userId.toString();
+      // ✅ Find user's rooms
+      const userRooms = await Game.find({ 
+        "players.userId": userId,
+        phase: { $in: ["waiting", "started", "night", "day"] }
+      });
 
-        gameRoom.players = gameRoom.players.filter(
-          (p) => p.userId.toString() !== userId.toString()
+      for (const gameRoom of userRooms) {
+        const playerIndex = gameRoom.players.findIndex(
+          p => p.userId.toString() === userId.toString()
         );
 
-        if (gameRoom.players.length === 0) {
-          // Delete empty room
-          await Game.deleteOne({ roomId: gameRoom.roomId });
-          io.to(gameRoom.roomId).emit("room_closed");
-          timerManager.clearRoomTimer(gameRoom.roomId);
-          console.log(`🗑️ Empty room ${gameRoom.roomId} deleted on disconnect`);
-        } else {
-          // If host disconnected, assign new host
-          if (wasHost && gameRoom.players.length > 0) {
-            gameRoom.hostId = gameRoom.players[0].userId;
-            io.to(gameRoom.roomId).emit("new_host", { 
-              newHostId: gameRoom.hostId,
-              newHostUsername: gameRoom.players[0].username 
-            });
-            console.log(`👑 New host assigned on disconnect: ${gameRoom.players[0].username}`);
-          }
+        if (playerIndex !== -1) {
+          const wasHost = gameRoom.hostId.toString() === userId.toString();
+          console.log(`🔌 Removing user ${userId} from room ${gameRoom.roomId}`);
 
-          await gameRoom.save();
-          io.to(gameRoom.roomId).emit("update_players", gameRoom.players);
+          // ✅ Remove player
+          gameRoom.players.splice(playerIndex, 1);
+
+          if (gameRoom.players.length === 0) {
+            // ✅ Delete empty room
+            await Game.deleteOne({ roomId: gameRoom.roomId });
+            io.to(gameRoom.roomId).emit("room_closed");
+            console.log(`🗑️ Deleted empty room ${gameRoom.roomId}`);
+          } else {
+            // ✅ Assign new host if needed
+            if (wasHost) {
+              gameRoom.hostId = gameRoom.players[0].userId;
+              io.to(gameRoom.roomId).emit("new_host", { 
+                newHostId: gameRoom.hostId,
+                newHostUsername: gameRoom.players[0].username 
+              });
+              console.log(`👑 New host assigned: ${gameRoom.players[0].username}`);
+            }
+
+            gameRoom.updatedAt = new Date();
+            await gameRoom.save();
+            io.to(gameRoom.roomId).emit("update_players", gameRoom.players);
+          }
         }
       }
 
-      // ✅ Update rooms list
-      await sendRooms();
-      console.log(`✅ User ${userId} cleaned from ${userRooms.length} rooms on disconnect`);
+      socket.leave(roomId);
+      if (sendRooms) await sendRooms();
+
+      console.log(`🔌 User ${userId} disconnected and cleaned up`);
     } catch (err) {
-      console.error("❌ disconnect cleanup error:", err.message);
+      console.error("❌ disconnect error:", err.message);
     }
   };
 
-  // ===== FORCE LEAVE ALL ROOMS (Emergency cleanup) =====
-  socket.on("force_leave_all", async ({ userId }) => {
-    try {
-      console.log(`🚨 Force leaving all rooms for user ${userId}`);
-      
-      if (!userId) {
-        socket.emit("error", { message: "Missing userId" });
-        return;
-      }
-
-      const userRooms = await Game.find({ "players.userId": userId });
-      let cleanedRooms = 0;
-
-      for (const gameRoom of userRooms) {
-        const wasHost = gameRoom.hostId.toString() === userId.toString();
-        
-        gameRoom.players = gameRoom.players.filter(
-          (p) => p.userId.toString() !== userId.toString()
-        );
-
-        if (gameRoom.players.length === 0) {
-          await Game.deleteOne({ roomId: gameRoom.roomId });
-          io.to(gameRoom.roomId).emit("room_closed");
-          timerManager.clearRoomTimer(gameRoom.roomId);
-        } else {
-          if (wasHost && gameRoom.players.length > 0) {
-            gameRoom.hostId = gameRoom.players[0].userId;
-            io.to(gameRoom.roomId).emit("new_host", { 
-              newHostId: gameRoom.hostId,
-              newHostUsername: gameRoom.players[0].username 
-            });
-          }
-          await gameRoom.save();
-          io.to(gameRoom.roomId).emit("update_players", gameRoom.players);
-        }
-        cleanedRooms++;
-      }
-
-      // Clear socket data
-      socket.data.userId = null;
-      socket.data.roomId = null;
-
-      await sendRooms();
-      
-      socket.emit("force_leave_confirmed", {
-        message: `Cleaned from ${cleanedRooms} rooms`,
-        cleanedRooms
-      });
-
-      console.log(`🧹 Force cleaned user ${userId} from ${cleanedRooms} rooms`);
-    } catch (err) {
-      console.error("❌ force_leave_all error:", err.message);
-      socket.emit("error", { message: "Failed to force leave rooms" });
-    }
-  });
-
-  // ✅ Return handleDisconnect for use in main socket handler
+  // Return the disconnect handler for use in main socket handler
   return { handleDisconnect };
 };
