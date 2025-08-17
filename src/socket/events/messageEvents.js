@@ -11,6 +11,7 @@ export const setupMessageEvents = (socket, io) => {
     try {
       // senderId ni olish
       const senderId = user?.user?._id;
+      console.log("👤 Sender ID:", senderId);
       if (!senderId || !message) {
         socket.emit("error", { message: "Invalid sender ID or message" });
         return;
