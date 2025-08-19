@@ -110,9 +110,9 @@ export function handleRoomEvents(io, socket, roomTimers) {
       // Проверка, что пользователь не в другой комнате
       const allRooms = await Game.find({ "players.userId": userId });
       const alreadyInOtherRoom = allRooms.some(r => r.roomId !== roomId);
-      if (alreadyInOtherRoom) {
-        throw new Error("You are already in another room");
-      }
+      // if (alreadyInOtherRoom) {
+      //   throw new Error("You are already in another room");
+      // }
 
       // Добавление игрока, если его еще нет в комнате
       const playerExists = gameRoom.players.some(p => p.userId.toString() === userId);

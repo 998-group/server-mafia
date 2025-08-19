@@ -28,11 +28,11 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
       const existingRoom = await Game.findOne({ 
         "players.userId": data.hostId 
       });
-      if (existingRoom) {
-        console.log(`❌ User ${owner.username} already in room ${existingRoom.roomId}`);
-        socket.emit("error", { message: "You are already in another room" });
-        return;
-      }
+      // if (existingRoom) {
+      //   console.log(`❌ User ${owner.username} already in room ${existingRoom.roomId}`);
+      //   socket.emit("error", { message: "You are already in another room" });
+      //   return;
+      // }
 
       const newRoom = await Game.create({
         roomId: uniqId(),
