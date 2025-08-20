@@ -44,6 +44,11 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: "https://cdn-icons-png.flaticon.com/512/149/149071.png",
   },
+  coins: {
+    type: Number,
+    default: 100,
+    min: 0,
+  },
   isBan: [banSchema], 
   isMuted: [muteSchema],
 });

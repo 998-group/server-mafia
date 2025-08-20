@@ -3,7 +3,7 @@ import Game from "../../models/Game.js";
 import User from "../../models/User.js";
 import uniqId from "uniqid";
 import { GAME_CONFIG } from "../../config/gameConfig.js";
-import  generateRoles  from "../helpers/gameLogic.js";
+import  { generateRoles }  from "../helpers/gameLogic.js";
 
 export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
   
@@ -28,11 +28,11 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
       const existingRoom = await Game.findOne({ 
         "players.userId": data.hostId 
       });
-      if (existingRoom) {
-        console.log(`❌ User ${owner.username} already in room ${existingRoom.roomId}`);
-        socket.emit("error", { message: "You are already in another room" });
-        return;
-      }
+      // if (existingRoom) {
+      //   console.log(`❌ User ${owner.username} already in room ${existingRoom.roomId}`);
+      //   socket.emit("error", { message: "You are already in another room" });
+      //   return;
+      // }
 
       const newRoom = await Game.create({
         roomId: uniqId(),
