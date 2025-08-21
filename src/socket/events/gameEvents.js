@@ -4,7 +4,6 @@ import { GAME_CONFIG } from "../../config/gameConfig.js";
 import socket from "../../../../client-mafia/src/socket.js";
 
 export const setupGameEvents = (socket, io, timerManager) => {
-
   // ===== GET MY ROLE EVENT =====
   socket.on("get_my_role", async ({ userId, roomId }) => {
     try {
@@ -28,10 +27,10 @@ export const setupGameEvents = (socket, io, timerManager) => {
         return;
       }
 
-      socket.emit("your_role", { 
+      socket.emit("your_role", {
         role: player.gameRole || "unknown",
         username: player.username,
-        isAlive: player.isAlive 
+        isAlive: player.isAlive,
       });
 
       console.log(`🎭 Sent role ${player.gameRole} to ${player.username}`);
@@ -41,7 +40,7 @@ export const setupGameEvents = (socket, io, timerManager) => {
     }
   });
 
-  // ===== MAFIA KILL EVENT =====
+  // ===== MAFIA VOTE (oldingi mafia_kill) =====
   socket.on("mafia_kill", async ({ roomId, killerId, targetId }) => {
     try {
       const gameRoom = await Game.findOne({ roomId });
@@ -61,42 +60,48 @@ export const setupGameEvents = (socket, io, timerManager) => {
         socket.emit("error", { message: "Invalid killer or target" });
         return;
       }
-
       if (killer.gameRole !== "mafia" || !killer.isAlive) {
         socket.emit("error", { message: "Killer must be an alive mafia" });
         return;
       }
-
       if (!target.isAlive) {
         socket.emit("error", { message: "Target is already dead" });
         return;
       }
 
-      if (gameRoom.hasMafiaKilled) {
-        socket.emit("error", { message: "Mafia has already killed this night" });
-        return;
+      // ❗ Darhol o'ldirmaymiz, faqat ovozni yozamiz
+      // Agar killer oldin ovoz bergan bo'lsa - yangilaymiz
+      const prevIdx = gameRoom.mafiaVotes.findIndex(
+        (v) => v.voter.toString() === killerId.toString()
+      );
+      if (prevIdx >= 0) {
+        gameRoom.mafiaVotes[prevIdx].target = targetId;
+      } else {
+        gameRoom.mafiaVotes.push({ voter: killerId, target: targetId });
       }
 
-      gameRoom.mafiaTarget = targetId;
-      gameRoom.hasMafiaKilled = true;
+      // Agar “faqat bir marta” qilishni xohlasak flag ishlatishimiz mumkin,
+      // lekin ko'p mafialar borligi uchun collective vote ma'qul.
       await gameRoom.save();
 
-      const mafiaPlayers = gameRoom.players.filter(p => p.gameRole === "mafia");
-      mafiaPlayers.forEach(mafiaPlayer => {
-        io.to(socket.id).emit("mafia_kill_confirmed", {
-          targetId,
-          targetUsername: target.username,
-        });
+      // Faqat mafiya guruhiga tasdiq yuboramiz (agar socketId tracking bo'lsa)
+      // Hozir umumiy xabar
+      io.to(roomId).emit("mafia_vote_update", {
+        voterId: killerId,
+        targetId,
+        totalVotes: gameRoom.mafiaVotes.filter(
+          (v) => v.target.toString() === targetId.toString()
+        ).length,
       });
 
-      console.log(`💀 Mafia selected target: ${target.username} (ID: ${targetId})`);
+      console.log(`🗳️ Mafia vote: ${killer.username} → ${target.username}`);
     } catch (err) {
       console.error("❌ mafia_kill error:", err.message);
-      socket.emit("error", { message: "Failed to process kill" });
+      socket.emit("error", { message: "Failed to process mafia vote" });
     }
   });
 
-  // ===== DOCTOR HEAL EVENT =====
+  // ===== DOCTOR HEAL =====
   socket.on("doctor_heal", async ({ roomId, doctorId, targetId }) => {
     try {
       const gameRoom = await Game.findOne({ roomId });
@@ -116,25 +121,22 @@ export const setupGameEvents = (socket, io, timerManager) => {
         socket.emit("error", { message: "Invalid doctor or target" });
         return;
       }
-
       if (doctor.gameRole !== "doctor" || !doctor.isAlive) {
         socket.emit("error", { message: "Healer must be an alive doctor" });
         return;
       }
 
-      if (!target.isAlive) {
-        socket.emit("error", { message: "Target is already dead" });
-        return;
-      }
-
+      // Bir kechada 1 ta heal
       if (gameRoom.hasDoctorHealed) {
-        socket.emit("error", { message: "Doctor has already healed this night" });
+        socket.emit("error", {
+          message: "Doctor has already healed this night",
+        });
         return;
       }
 
-      gameRoom.doctorTarget = targetId;
+      gameRoom.doctorTarget = targetId; // faqat flag/target
       gameRoom.hasDoctorHealed = true;
-      target.isHealed = true;
+      target.isHealed = true; // UI feedback uchun
       await gameRoom.save();
 
       socket.emit("doctor_heal_confirmed", {
@@ -142,7 +144,7 @@ export const setupGameEvents = (socket, io, timerManager) => {
         targetUsername: target.username,
       });
 
-      console.log(`🩺 Doctor healed: ${target.username} (ID: ${targetId})`);
+      console.log(`🩺 Doctor planned heal: ${target.username}`);
     } catch (err) {
       console.error("❌ doctor_heal error:", err.message);
       socket.emit("error", { message: "Failed to process heal" });
@@ -153,7 +155,9 @@ export const setupGameEvents = (socket, io, timerManager) => {
   socket.on("check_player", async ({ roomId, checkerId, targetUserId }) => {
     try {
       if (!roomId || !checkerId || !targetUserId) {
-        socket.emit("error", { message: "Missing roomId, checkerId, or targetUserId" });
+        socket.emit("error", {
+          message: "Missing roomId, checkerId, or targetUserId",
+        });
         return;
       }
 
@@ -172,13 +176,16 @@ export const setupGameEvents = (socket, io, timerManager) => {
       }
 
       if (gameRoom.hasDetectiveChecked) {
-        socket.emit("error", { message: "Detective has already checked this night" });
+        socket.emit("error", {
+          message: "Detective has already checked this night",
+        });
         return;
       }
 
       const target = gameRoom.players.find(
         (p) => p.userId.toString() === targetUserId.toString()
       );
+      console.log("target", target);
       if (!target || !target.isAlive) {
         socket.emit("error", { message: "Target must be alive" });
         return;
@@ -198,7 +205,9 @@ export const setupGameEvents = (socket, io, timerManager) => {
         role: target.gameRole === "mafia" ? "mafia" : "innocent",
       });
 
-      console.log(`🔍 Detective ${checker.username} checked ${target.username}`);
+      console.log(
+        `🔍 Detective ${checker.username} checked ${target.username}`
+      );
     } catch (err) {
       console.error("❌ check_player error:", err.message);
       socket.emit("error", { message: "Failed to check player" });
@@ -209,7 +218,9 @@ export const setupGameEvents = (socket, io, timerManager) => {
   socket.on("vote_player", async ({ roomId, voterId, targetUserId }) => {
     try {
       if (!roomId || !voterId || !targetUserId) {
-        socket.emit("error", { message: "Missing roomId, voterId, or targetUserId" });
+        socket.emit("error", {
+          message: "Missing roomId, voterId, or targetUserId",
+        });
         return;
       }
 
@@ -289,9 +300,9 @@ export const setupGameEvents = (socket, io, timerManager) => {
       });
 
       console.log(
-        `🔎 get_game_status: Room ${roomId} | Phase: ${gameRoom.phase} | TimeLeft: ${
-          timeLeft !== null ? Math.floor(timeLeft) : "N/A"
-        }s`
+        `🔎 get_game_status: Room ${roomId} | Phase: ${
+          gameRoom.phase
+        } | TimeLeft: ${timeLeft !== null ? Math.floor(timeLeft) : "N/A"}s`
       );
     } catch (err) {
       console.error("❌ get_game_status error:", err.message);
@@ -306,8 +317,8 @@ export const setupGameEvents = (socket, io, timerManager) => {
         return;
       }
 
-      const gameRoom = await Game.findOne({ 
-        "players.userId": userId 
+      const gameRoom = await Game.findOne({
+        "players.userId": userId,
       });
 
       if (!gameRoom) {
@@ -346,8 +357,10 @@ export const setupGameEvents = (socket, io, timerManager) => {
         return;
       }
 
-      console.log(`🗣️ User ${user} added voice for ${selected} in room ${roomId}`);
-      
+      console.log(
+        `🗣️ User ${user} added voice for ${selected} in room ${roomId}`
+      );
+
       await gameRoom.save();
       io.to(roomId).emit("update_players", gameRoom.players);
     } catch (err) {
@@ -364,8 +377,10 @@ export const setupGameEvents = (socket, io, timerManager) => {
         return;
       }
 
-      console.log(`🔇 User ${user} removed voice from ${userId} in room ${roomId}`);
-      
+      console.log(
+        `🔇 User ${user} removed voice from ${userId} in room ${roomId}`
+      );
+
       await gameRoom.save();
       io.to(roomId).emit("update_players", gameRoom.players);
     } catch (err) {

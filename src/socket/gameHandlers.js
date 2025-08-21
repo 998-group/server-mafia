@@ -197,6 +197,43 @@ function startRoomTimer(io, roomId, roomTimers, durationInSeconds) {
             break;
           case "night":
             nextPhase = "day";
+          case "night":
+            nextPhase = "day";
+
+            if (gameRoom.mafiaTarget) {
+              const target = gameRoom.players.find(
+                (p) => p.userId.toString() === gameRoom.mafiaTarget.toString()
+              );
+
+              if (target && target.isAlive) {
+                if (target.isHealed) {
+                  // ✅ Doctor davolagan odam o‘lmaydi
+                  console.log(`🛡️ ${target.username} doctor tomonidan qutqarildi!`);
+                  io.to(roomId).emit("player_saved", {
+                    userId: target.userId,
+                    username: target.username,
+                  });
+                } else {
+                  // ❌ Doctor davolamagan bo‘lsa o‘ladi
+                  target.isAlive = false;
+                  console.log(`☀️ Day phase: ${target.username} ertalab o‘lik topildi (mafia)`);
+
+                  io.to(roomId).emit("player_killed", {
+                    userId: target.userId,
+                    username: target.username,
+                  });
+                }
+              }
+
+              // ✅ Reset qilish
+              gameRoom.mafiaTarget = null;
+              gameRoom.hasMafiaKilled = false;
+            }
+
+            // Doctor & Detective flaglarni reset
+            gameRoom.players.forEach(p => p.isHealed = false);
+            gameRoom.hasDoctorHealed = false;
+            gameRoom.hasDetectiveChecked = false;
             break;
           case "day":
             nextPhase = "ended";
