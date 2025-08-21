@@ -1,52 +1,63 @@
+
 // src/socket/events/messageEvents.js
 import GlobalChat from "../../models/GlobalChat.js";
 
 export const setupMessageEvents = (socket, io) => {
 
   // ===== GLOBAL MESSAGING =====
-  socket.on("send_message", async ({ data, global }) => {
+  socket.on("send_message", async ({ message, user, global, roomId }) => {
+    console.log("📧 Received message:", message);
+    console.log("👤 User:", user);
+  
     try {
-      const senderId = data?.user?.user?._id;
-      if (!senderId || !data.message) {
+      // senderId ni olish
+      const senderId = user?.user?._id;
+      console.log("👤 Sender ID:", senderId);
+      if (!senderId || !message) {
         socket.emit("error", { message: "Invalid sender ID or message" });
         return;
       }
-
-      // Sanitize message to prevent XSS
-      const sanitizedMessage = data.message.toString().trim();
+  
+      // XSS oldini olish va uzunlikni tekshirish
+      const sanitizedMessage = message.toString().trim();
       if (!sanitizedMessage || sanitizedMessage.length > 1000) {
         socket.emit("error", { message: "Invalid message length" });
         return;
       }
-
+  
+      // Bazaga saqlash
       const newMessage = await GlobalChat.create({
         sender: senderId,
         text: sanitizedMessage,
         global: Boolean(global),
       });
-
+  
+      // Avtor ma’lumotlarini qo‘shish
       const populated = await newMessage.populate(
         "sender",
-        "_id username avatar role"
+        "_id username image role"
       );
-
+  
+      // Kimlarga yuborishni aniqlash
       if (global) {
         io.emit("receive_message", populated);
-      } else if (data.roomId) {
-        io.to(data.roomId).emit("receive_message", populated);
+      } else if (roomId) {
+        io.to(roomId).emit("receive_message", populated);
       } else {
         socket.emit("receive_message", populated);
       }
-
+  
       console.log(`✅ Message sent by ${populated.sender.username}`);
     } catch (err) {
       console.error("❌ send_message error:", err.message);
       socket.emit("error", { message: "Failed to send message" });
     }
   });
+  
 
   // ===== ROOM MESSAGING =====
   socket.on("send_room_message", async ({ roomId, message }) => {
+   
     try {
       if (!roomId || !message) {
         socket.emit("error", { message: "Missing roomId or message" });
