@@ -33,16 +33,15 @@ export const checkWinCondition = (gameRoom) => {
   return null;
 };
 
+
 export const resetNightActions = (gameRoom) => {
   gameRoom.hasMafiaKilled = false;
   gameRoom.hasDoctorHealed = false;
   gameRoom.hasDetectiveChecked = false;
   gameRoom.mafiaTarget = null;
   gameRoom.doctorTarget = null;
-  // Reset heal status for all players
-  gameRoom.players.forEach(p => {
-    p.isHealed = false;
-  });
+  gameRoom.mafiaVotes = []; // NEW: kechadagi ovozlar tozalanadi
+  gameRoom.players.forEach(p => { p.isHealed = false; });
 };
 
 export const resetDayVotes = (gameRoom) => {
@@ -52,21 +51,62 @@ export const resetDayVotes = (gameRoom) => {
   });
 };
 
+
 export const processNightActions = (gameRoom, io, roomId) => {
-  // Process mafia kill and doctor heal
-  if (gameRoom.mafiaTarget && gameRoom.doctorTarget !== gameRoom.mafiaTarget) {
-    const targetPlayer = gameRoom.players.find(p => p.userId.toString() === gameRoom.mafiaTarget);
-    if (targetPlayer) {
-      targetPlayer.isAlive = false;
-      io.to(roomId).emit("player_killed", {
-        targetId: gameRoom.mafiaTarget,
-        targetUsername: targetPlayer.username,
-      });
+  // 1) MafiaVotes -> count by target
+  const votes = gameRoom.mafiaVotes || [];
+  if (!votes.length) {
+    // Hech kimga ovoz berilmagan -> hech kim o‘lmaydi
+    io.to(roomId).emit("night_result", { message: "Tunda hech kim o'ldirilmadi." });
+    return;
+  }
+
+  const countMap = new Map(); // targetId -> count
+  for (const v of votes) {
+    const key = v.target.toString();
+    countMap.set(key, (countMap.get(key) || 0) + 1);
+  }
+
+  // 2) Eng ko‘p ovoz olgan (max count) target(lar)ni topamiz
+  let max = 0;
+  let leaders = [];
+  for (const [tId, cnt] of countMap.entries()) {
+    if (cnt > max) {
+      max = cnt;
+      leaders = [tId];
+    } else if (cnt === max) {
+      leaders.push(tId);
     }
-  } else if (gameRoom.mafiaTarget && gameRoom.doctorTarget === gameRoom.mafiaTarget) {
+  }
+
+  // 3) Tenglik bo‘lsa random
+  const chosenTargetId = leaders.length === 1
+    ? leaders[0]
+    : leaders[Math.floor(Math.random() * leaders.length)];
+
+  // UI/retro-compat uchun saqlab qo'yish (ixtiyoriy)
+  gameRoom.mafiaTarget = chosenTargetId;
+
+  // 4) Doctor ustunlik: agar doctor ham shu chosenTargetId ni tanlagan bo‘lsa — saqlanadi
+  if (gameRoom.doctorTarget && gameRoom.doctorTarget.toString() === chosenTargetId.toString()) {
+    // Saqlab qolish e'loni (ertalab)
     io.to(roomId).emit("player_saved", {
-      message: "Someone was saved by the doctor!"
+      targetId: chosenTargetId,
+      message: "Doktor kimnidir qutqarib qoldi!",
     });
+    return; // hech kim o‘lmaydi
+  }
+
+  // 5) Targetni haqiqatan o‘ldiramiz (model ichida isAlive = false)
+  const targetPlayer = gameRoom.players.find(p => p.userId.toString() === chosenTargetId.toString());
+  if (targetPlayer && targetPlayer.isAlive) {
+    targetPlayer.isAlive = false;
+    io.to(roomId).emit("player_killed", {
+      targetId: chosenTargetId,
+      targetUsername: targetPlayer.username,
+    });
+  } else {
+    io.to(roomId).emit("night_result", { message: "Tunda hech kim o'ldirilmadi." });
   }
 };
 
