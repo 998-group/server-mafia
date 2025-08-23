@@ -344,7 +344,6 @@ export const setupGameEvents = (socket, io, timerManager) => {
       socket.emit("error", { message: "Invalid roomId or duration" });
       return;
     }
-    timerManager.startRoomTimer(roomId, duration);
   });
 
   // ===== VOICE/CHAT EVENTS =====

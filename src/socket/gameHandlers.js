@@ -55,7 +55,6 @@ export function handleGameEvents(io, socket, roomTimers) {
         io.to(roomId).emit("update_players", gameRoom.players);
         io.to(roomId).emit("game_phase", gameRoom);
 
-        startRoomTimer(io, roomId, roomTimers, PHASE_DURATIONS.night);
       }
     } catch (err) {
       console.error("❌ ready error:", err.message);
@@ -162,123 +161,7 @@ function generateRoles(playerCount) {
   return roles.sort(() => Math.random() - 0.5);
 }
 
-function startRoomTimer(io, roomId, roomTimers, durationInSeconds) {
-  if (!durationInSeconds) return;
 
-  console.log(`⏱️ Timer started for ${roomId} for ${durationInSeconds} seconds`);
-
-  if (roomTimers[roomId]?.interval) {
-    clearInterval(roomTimers[roomId].interval);
-  }
-
-  roomTimers[roomId] = {
-    timeLeft: durationInSeconds,
-    interval: null,
-  };
-
-  roomTimers[roomId].interval = setInterval(async () => {
-    const timer = roomTimers[roomId];
-    if (!timer) return;
-
-    if (timer.timeLeft <= 0) {
-      clearInterval(timer.interval);
-      delete roomTimers[roomId];
-
-      io.to(roomId).emit("timer_end");
-
-      try {
-        const gameRoom = await Game.findOne({ roomId });
-        if (!gameRoom) return;
-
-        let nextPhase = null;
-        switch (gameRoom.phase) {
-          case "started":
-            nextPhase = "night";
-            break;
-          case "night":
-            nextPhase = "day";
-          case "night":
-            nextPhase = "day";
-
-            if (gameRoom.mafiaTarget) {
-              const target = gameRoom.players.find(
-                (p) => p.userId.toString() === gameRoom.mafiaTarget.toString()
-              );
-
-              if (target && target.isAlive) {
-                if (target.isHealed) {
-                  // ✅ Doctor davolagan odam o‘lmaydi
-                  console.log(`🛡️ ${target.username} doctor tomonidan qutqarildi!`);
-                  io.to(roomId).emit("player_saved", {
-                    userId: target.userId,
-                    username: target.username,
-                  });
-                } else {
-                  // ❌ Doctor davolamagan bo‘lsa o‘ladi
-                  target.isAlive = false;
-                  console.log(`☀️ Day phase: ${target.username} ertalab o‘lik topildi (mafia)`);
-
-                  io.to(roomId).emit("player_killed", {
-                    userId: target.userId,
-                    username: target.username,
-                  });
-                }
-              }
-
-              // ✅ Reset qilish
-              gameRoom.mafiaTarget = null;
-              gameRoom.hasMafiaKilled = false;
-            }
-
-            // Doctor & Detective flaglarni reset
-            gameRoom.players.forEach(p => p.isHealed = false);
-            gameRoom.hasDoctorHealed = false;
-            gameRoom.hasDetectiveChecked = false;
-            break;
-          case "day":
-            nextPhase = "ended";
-            gameRoom.endedAt = new Date();
-            break;
-          case "ended":
-            nextPhase = "waiting";
-            gameRoom.winner = null;
-            gameRoom.currentTurn = 0;
-            gameRoom.players.forEach((p) => {
-              p.isReady = false;
-              p.isAlive = true;
-              p.gameRole = null;
-              p.votes = 0;
-              p.isHealed = false;
-            });
-            break;
-          default:
-            console.warn(`⚠️ Unknown phase: ${gameRoom.phase}`);
-            return;
-        }
-
-        gameRoom.phase = nextPhase;
-        await gameRoom.save();
-
-        io.to(roomId).emit("game_phase", gameRoom);
-        io.to(roomId).emit("update_players", gameRoom.players);
-
-        if (PHASE_DURATIONS[nextPhase]) {
-          startRoomTimer(io, roomId, roomTimers, PHASE_DURATIONS[nextPhase]);
-        }
-
-        console.log(`✅ Phase changed to ${nextPhase} for room ${roomId}`);
-      } catch (err) {
-        console.error("❌ Timer phase switch error:", err.message);
-        io.to(roomId).emit("error", { message: "Timer phase switch failed" });
-      }
-
-      return;
-    }
-
-    io.to(roomId).emit("timer_update", { timeLeft: timer.timeLeft });
-    timer.timeLeft--;
-  }, 1000);
-}
 
 function getTimeLeftForRoom(roomTimers, roomId) {
   return roomTimers[roomId]?.timeLeft ?? null;

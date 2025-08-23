@@ -269,7 +269,6 @@ export const setupRoomEvents = (socket, io, timerManager, sendRooms) => {
         io.to(roomId).emit("game_phase", gameRoom);
 
         // Start with night phase timer
-        timerManager.startRoomTimer(roomId, GAME_CONFIG.PHASE_DURATIONS.night);
         
         console.log(`🎮 Game started in room ${roomId} with ${gameRoom.players.length} players (Test Mode: ${GAME_CONFIG.TEST_MODE})`);
       }
