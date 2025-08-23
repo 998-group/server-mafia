@@ -6,6 +6,8 @@ import { GAME_CONFIG } from "../../config/gameConfig.js";
 import { generateRoles } from "../helpers/gameLogic.js";
 
 export const setupRoomEvents = (socket, io, timerManager) => {
+  console.log("🏠 Setting up room events with timer integration");
+
   const sendRooms = async () => {
     try {
       const rooms = await Game.find({ players: { $not: { $size: 0 } } })
@@ -18,66 +20,12 @@ export const setupRoomEvents = (socket, io, timerManager) => {
     }
   };
 
-  // ===== CREATE ROOM EVENT =====
-  socket.on("create_room", async ({ hostId, roomName }) => {
-    try {
-      console.log(`🏗️ Creating room: ${roomName} by host ${hostId}`);
-
-      if (!hostId || !roomName) {
-        socket.emit("error", { message: "Missing hostId or roomName" });
-        return;
-      }
-
-      if (roomName.length < 3 || roomName.length > 30) {
-        socket.emit("error", {
-          message: "Room name must be between 3-30 characters",
-        });
-        return;
-      }
-
-      // Generate unique room ID
-      const roomId = `room_${Date.now()}_${Math.random()
-        .toString(36)
-        .substr(2, 9)}`;
-
-      // Create new game room
-      const newRoom = new Game({
-        roomName: roomName.trim(),
-        roomId,
-        hostId,
-        players: [],
-        phase: "waiting",
-        currentTurn: 0,
-        winner: null,
-      });
-
-      await newRoom.save();
-
-      // Join socket to room
-      socket.join(roomId);
-
-      // Send success response
-      socket.emit("joined_room", {
-        roomId,
-        roomName: roomName.trim(),
-        hostId,
-        message: "Room created successfully",
-      });
-
-      console.log(`✅ Room created: ${roomId} (${roomName})`);
-
-      // ✅ SENDROOMS CHAQIRILDI
-      await sendRooms();
-    } catch (err) {
-      console.error("❌ create_room error:", err.message);
-      socket.emit("error", { message: "Failed to create room" });
-    }
-  });
-
-  // ===== JOIN ROOM EVENT =====
+  // ===== JOIN ROOM EVENT - COMPLETELY FIXED =====
   socket.on("join_room", async ({ roomId, userId, username }) => {
     try {
-      console.log(`🚪 User ${username} (${userId}) joining room ${roomId}`);
+      console.log(
+        `🚪 User ${username} (${userId}) trying to join room ${roomId}`
+      );
 
       if (!roomId || !userId || !username) {
         socket.emit("error", {
@@ -86,43 +34,96 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         return;
       }
 
-      const gameRoom = await Game.findOne({ roomId });
+      // ✅ STEP 1: Find room with retry mechanism
+      let gameRoom = null;
+      let retryCount = 0;
+      const maxRetries = 3;
+
+      while (retryCount < maxRetries) {
+        try {
+          gameRoom = await Game.findOne({ roomId });
+          break;
+        } catch (err) {
+          retryCount++;
+          console.warn(
+            `⚠️ Retry ${retryCount}: Database query failed for room ${roomId}`
+          );
+          if (retryCount === maxRetries) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 100)); // 100ms delay
+        }
+      }
+
       if (!gameRoom) {
         socket.emit("error", { message: "Room not found" });
         return;
       }
 
-      // Check if game is in progress
+      // ✅ STEP 2: Check game phase
       if (gameRoom.phase !== "waiting") {
         socket.emit("error", { message: "Game is already in progress" });
         return;
       }
 
-      // Check if room is full
+      // ✅ STEP 3: Check room capacity
       if (gameRoom.players.length >= GAME_CONFIG.MAX_PLAYERS) {
         socket.emit("error", { message: "Room is full" });
         return;
       }
 
-      // Check if user already in room
-      const existingPlayer = gameRoom.players.find(
+      // ✅ STEP 4: Advanced duplicate check
+      const existingPlayerIndex = gameRoom.players.findIndex(
         (p) => p.userId.toString() === userId.toString()
       );
 
-      if (existingPlayer) {
+      if (existingPlayerIndex !== -1) {
         console.log(
-          `ℹ️ User ${username} already in room ${roomId}, sending current state`
+          `🔍 User ${username} already exists in room ${roomId} at index ${existingPlayerIndex}`
         );
 
-        // Send current room state instead of error
-        socket.emit("joined_room", gameRoom);
+        // Update existing player info (in case username changed)
+        gameRoom.players[existingPlayerIndex].username = username.trim();
+
+        try {
+          await gameRoom.save();
+        } catch (saveErr) {
+          console.warn(
+            `⚠️ Failed to update existing player: ${saveErr.message}`
+          );
+        }
+
+        // Join socket to room
         socket.join(roomId);
         socket.data = { userId, roomId };
+
+        // Send current room state
+        socket.emit("joined_room", gameRoom);
+
+        // Update all players
+        io.to(roomId).emit("update_players", gameRoom.players);
+
+        console.log(`✅ Existing user ${username} rejoined room ${roomId}`);
         return;
       }
 
-      // Add player to room
-      gameRoom.players.push({
+      // ✅ STEP 5: Remove any duplicate entries (cleanup)
+      const cleanPlayers = [];
+      const seenUserIds = new Set();
+
+      gameRoom.players.forEach((player) => {
+        if (!seenUserIds.has(player.userId.toString())) {
+          cleanPlayers.push(player);
+          seenUserIds.add(player.userId.toString());
+        } else {
+          console.log(
+            `🧹 Removing duplicate player: ${player.username} (${player.userId})`
+          );
+        }
+      });
+
+      gameRoom.players = cleanPlayers;
+
+      // ✅ STEP 6: Add new player
+      const newPlayer = {
         userId,
         username: username.trim(),
         gameRole: null,
@@ -131,11 +132,68 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         isHealed: false,
         votes: 0,
         hasVoted: false,
-      });
+      };
 
-      await gameRoom.save();
+      gameRoom.players.push(newPlayer);
 
-      // Join socket to room
+      // ✅ STEP 7: Save with retry mechanism (prevent version conflicts)
+      let saveSuccess = false;
+      retryCount = 0;
+
+      while (retryCount < maxRetries && !saveSuccess) {
+        try {
+          await gameRoom.save();
+          saveSuccess = true;
+          console.log(
+            `💾 Successfully saved room ${roomId} on attempt ${retryCount + 1}`
+          );
+        } catch (saveErr) {
+          retryCount++;
+          console.warn(
+            `⚠️ Save attempt ${retryCount} failed: ${saveErr.message}`
+          );
+
+          if (
+            saveErr.name === "VersionError" ||
+            saveErr.message.includes("version")
+          ) {
+            // Reload document and retry
+            gameRoom = await Game.findOne({ roomId });
+            if (!gameRoom) {
+              socket.emit("error", { message: "Room was deleted" });
+              return;
+            }
+
+            // Re-check for duplicates
+            const existingAfterReload = gameRoom.players.findIndex(
+              (p) => p.userId.toString() === userId.toString()
+            );
+
+            if (existingAfterReload !== -1) {
+              console.log(`🔍 User ${username} was added by another process`);
+              saveSuccess = true; // Don't need to save again
+              break;
+            }
+
+            // Re-add player to reloaded document
+            gameRoom.players.push(newPlayer);
+          } else if (retryCount === maxRetries) {
+            throw saveErr;
+          }
+
+          // Wait before retry
+          await new Promise((resolve) => setTimeout(resolve, 100 * retryCount));
+        }
+      }
+
+      if (!saveSuccess) {
+        socket.emit("error", {
+          message: "Failed to join room after multiple attempts",
+        });
+        return;
+      }
+
+      // ✅ STEP 8: Socket and response handling
       socket.join(roomId);
       socket.data = { userId, roomId };
 
@@ -151,18 +209,25 @@ export const setupRoomEvents = (socket, io, timerManager) => {
       });
 
       console.log(
-        `✅ User ${username} joined room ${roomId}. Total players: ${gameRoom.players.length}`
+        `✅ User ${username} successfully joined room ${roomId}. Total players: ${gameRoom.players.length}`
       );
 
-      // ✅ SENDROOMS CHAQIRILDI
+      // Update global room list
       await sendRooms();
     } catch (err) {
       console.error("❌ join_room error:", err.message);
-      socket.emit("error", { message: "Failed to join room" });
+      console.error("Stack trace:", err.stack);
+      socket.emit("error", {
+        message: "Failed to join room",
+        details:
+          process.env.NODE_ENV === "development"
+            ? err.message
+            : "Internal error",
+      });
     }
   });
 
-  // ===== LEAVE ROOM EVENT =====
+  // ===== LEAVE ROOM EVENT - FIXED FOR DUPLICATES =====
   socket.on("leave_room", async ({ roomId, userId }) => {
     try {
       console.log(`🚪 User ${userId} leaving room ${roomId}`);
@@ -178,24 +243,39 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         return;
       }
 
-      const playerInRoom = gameRoom.players.find(
-        (p) => p.userId.toString() === userId.toString()
-      );
+      // ✅ Find and remove ALL instances of this user (cleanup duplicates)
+      const playersBeforeRemoval = gameRoom.players.length;
+      let removedPlayer = null;
 
-      if (!playerInRoom) {
+      gameRoom.players = gameRoom.players.filter((p) => {
+        if (p.userId.toString() === userId.toString()) {
+          if (!removedPlayer) {
+            removedPlayer = p; // Store first instance for logging
+          }
+          return false; // Remove this player
+        }
+        return true; // Keep this player
+      });
+
+      const playersRemoved = playersBeforeRemoval - gameRoom.players.length;
+
+      if (playersRemoved === 0) {
         socket.emit("error", { message: "You are not in this room" });
         return;
       }
 
+      if (playersRemoved > 1) {
+        console.log(
+          `🧹 Removed ${playersRemoved} duplicate instances of user ${userId}`
+        );
+      }
+
       const wasHost = gameRoom.hostId.toString() === userId.toString();
 
-      // Remove player from room
-      gameRoom.players = gameRoom.players.filter(
-        (p) => p.userId.toString() !== userId.toString()
-      );
-
       console.log(
-        `👤 ${playerInRoom.username} left room ${roomId}. Players remaining: ${gameRoom.players.length}`
+        `👤 ${
+          removedPlayer?.username || "User"
+        } left room ${roomId}. Players remaining: ${gameRoom.players.length}`
       );
 
       if (gameRoom.players.length === 0) {
@@ -226,13 +306,39 @@ export const setupRoomEvents = (socket, io, timerManager) => {
           });
         }
 
-        // Save and update clients
-        await gameRoom.save();
+        // Save with retry mechanism
+        let saveSuccess = false;
+        let retryCount = 0;
+        const maxRetries = 3;
+
+        while (retryCount < maxRetries && !saveSuccess) {
+          try {
+            await gameRoom.save();
+            saveSuccess = true;
+          } catch (saveErr) {
+            retryCount++;
+            console.warn(
+              `⚠️ Leave room save attempt ${retryCount} failed: ${saveErr.message}`
+            );
+
+            if (retryCount === maxRetries) {
+              console.error(
+                `❌ Failed to save after player left room ${roomId}`
+              );
+              // Continue anyway, emit events based on current state
+              break;
+            }
+
+            await new Promise((resolve) =>
+              setTimeout(resolve, 100 * retryCount)
+            );
+          }
+        }
 
         io.to(roomId).emit("update_players", gameRoom.players);
         io.to(roomId).emit("player_left", {
           userId: userId,
-          username: playerInRoom.username,
+          username: removedPlayer?.username || "Unknown",
           playersCount: gameRoom.players.length,
           wasHost: wasHost,
         });
@@ -248,13 +354,64 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         message: "Successfully left room",
       });
 
-      // ✅ SENDROOMS CHAQIRILDI
+      // Update global room list
       await sendRooms();
     } catch (err) {
       console.error("❌ leave_room error:", err.message);
       socket.emit("error", { message: "Failed to leave room" });
     }
   });
+
+  // ===== CLEANUP DUPLICATES ADMIN FUNCTION =====
+  socket.on("cleanup_room_duplicates", async ({ roomId, adminId }) => {
+    try {
+      console.log(`🧹 Cleanup duplicates request for room ${roomId}`);
+
+      const gameRoom = await Game.findOne({ roomId });
+      if (!gameRoom) {
+        socket.emit("error", { message: "Room not found" });
+        return;
+      }
+
+      const originalCount = gameRoom.players.length;
+      const cleanPlayers = [];
+      const seenUserIds = new Set();
+
+      gameRoom.players.forEach((player) => {
+        if (!seenUserIds.has(player.userId.toString())) {
+          cleanPlayers.push(player);
+          seenUserIds.add(player.userId.toString());
+        }
+      });
+
+      const duplicatesRemoved = originalCount - cleanPlayers.length;
+
+      if (duplicatesRemoved > 0) {
+        gameRoom.players = cleanPlayers;
+        await gameRoom.save();
+
+        io.to(roomId).emit("update_players", gameRoom.players);
+        io.to(roomId).emit("notification", {
+          message: `Removed ${duplicatesRemoved} duplicate players`,
+          type: "success",
+        });
+
+        console.log(
+          `🧹 Removed ${duplicatesRemoved} duplicates from room ${roomId}`
+        );
+      } else {
+        socket.emit("notification", {
+          message: "No duplicates found",
+          type: "info",
+        });
+      }
+    } catch (err) {
+      console.error("❌ cleanup_room_duplicates error:", err.message);
+      socket.emit("error", { message: "Failed to cleanup duplicates" });
+    }
+  });
+
+  console.log("✅ Room events setup completed with duplicate prevention");
   // ===== CREATE ROOM EVENT =====
   socket.on("create_room", async (data) => {
     try {
