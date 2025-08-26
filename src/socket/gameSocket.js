@@ -1,4 +1,4 @@
-// src/socket/gameSocket.js - Refactored & Clean
+// src/socket/gameSocket.js - COMPLETE INTEGRATION WITH TIMER
 import Game from "../models/Game.js";
 import { GAME_CONFIG } from "../config/gameConfig.js";
 import { TimerManager } from "./helpers/timerManager.js";
@@ -13,6 +13,7 @@ export const socketHandler = (io) => {
   console.log(`🎮 Game Socket Handler initialized`);
   console.log(`🧪 Test Mode: ${GAME_CONFIG.TEST_MODE ? 'ON' : 'OFF'}`);
   console.log(`👥 Min Players: ${GAME_CONFIG.MIN_PLAYERS}`);
+  console.log(`⏰ Phase Durations:`, GAME_CONFIG.PHASE_DURATIONS);
 
   // ===== HELPER FUNCTIONS =====
   const sendRooms = async () => {
@@ -21,6 +22,7 @@ export const socketHandler = (io) => {
         .sort({ createdAt: -1 })
         .limit(100);
       io.emit("update_rooms", rooms);
+      console.log(`📡 Sent ${rooms.length} rooms to all clients`);
     } catch (err) {
       console.error("❌ sendRooms error:", err.message);
     }
@@ -28,115 +30,269 @@ export const socketHandler = (io) => {
 
   const handleDisconnect = async (socket) => {
     const { userId, roomId } = socket.data || {};
-    console.log(`🔌 Disconnected: ${socket.id}, userId: ${userId}, roomId: ${roomId}`);
+    console.log(`🔌 User disconnecting: ${socket.id}, userId: ${userId}, roomId: ${roomId}`);
     
-    if (!userId || !roomId) return;
+    if (!userId) return;
 
     try {
-      const gameRoom = await Game.findOne({ roomId });
-      if (!gameRoom) return;
+      // Find user's game room
+      const gameRoom = await Game.findOne({
+        "players.userId": userId
+      });
 
+      if (!gameRoom) {
+        console.log(`🔍 No active room found for disconnecting user ${userId}`);
+        return;
+      }
+
+      const actualRoomId = gameRoom.roomId;
       const wasHost = gameRoom.hostId.toString() === userId.toString();
 
+      // Remove player from room
       gameRoom.players = gameRoom.players.filter(
         (p) => p.userId.toString() !== userId.toString()
       );
 
+      console.log(`👤 Removed user ${userId} from room ${actualRoomId}. Players left: ${gameRoom.players.length}`);
+
       if (gameRoom.players.length === 0) {
-        // Delete empty room
-        await Game.deleteOne({ roomId });
-        io.to(roomId).emit("room_closed");
-        timerManager.clearRoomTimer(roomId);
-        console.log(`🗑️ Empty room ${roomId} deleted`);
+        // Delete empty room and clear timer
+        await Game.deleteOne({ roomId: actualRoomId });
+        timerManager.clearRoomTimer(actualRoomId);
+        io.to(actualRoomId).emit("room_closed", { reason: "empty" });
+        console.log(`🗑️ Empty room ${actualRoomId} deleted and timer cleared`);
       } else {
         // If host disconnected, assign new host
-        if (wasHost && gameRoom.players.length > 0) {
-          gameRoom.hostId = gameRoom.players[0].userId;
-          io.to(roomId).emit("new_host", { 
-            newHostId: gameRoom.hostId,
-            newHostUsername: gameRoom.players[0].username 
+        if (wasHost) {
+          const newHost = gameRoom.players[0];
+          gameRoom.hostId = newHost.userId;
+          console.log(`👑 New host assigned: ${newHost.username} in room ${actualRoomId}`);
+          
+          io.to(actualRoomId).emit("new_host", {
+            newHostId: newHost.userId.toString(),
+            newHostUsername: newHost.username
           });
-          console.log(`👑 New host assigned: ${gameRoom.players[0].username}`);
         }
 
+        // Save changes and update clients
         await gameRoom.save();
-        io.to(roomId).emit("update_players", gameRoom.players);
+        io.to(actualRoomId).emit("update_players", gameRoom.players);
+        io.to(actualRoomId).emit("player_left", {
+          userId: userId,
+          playersCount: gameRoom.players.length
+        });
       }
 
-      socket.leave(roomId);
+      // Send updated room list
       await sendRooms();
 
-      console.log(`🔌 User ${userId} disconnected from room ${roomId}`);
     } catch (err) {
-      console.error("❌ disconnect error:", err.message);
+      console.error(`❌ Error handling disconnect for user ${userId}:`, err.message);
     }
   };
 
   // ===== SOCKET CONNECTION HANDLER =====
   io.on("connection", (socket) => {
-    console.log(`🔌 Connected: ${socket.id}`);
-    socket.emit("your_socket_id", socket.id);
+    console.log(`🔗 New client connected: ${socket.id}`);
 
-    // ===== SETUP EVENT HANDLERS =====
-    setupRoomEvents(socket, io, timerManager, sendRooms);
+    // Setup event handlers
+    setupRoomEvents(socket, io, timerManager);
     setupGameEvents(socket, io, timerManager);
     setupMessageEvents(socket, io);
 
-    // ===== ROOM MANAGEMENT EVENTS =====
-    socket.on("request_rooms", async () => {
-      await sendRooms();
+    // ===== TIMER-SPECIFIC EVENTS =====
+    
+    // Manual timer start (admin/host only)
+    socket.on("start_timer", async ({ roomId, duration, hostId }) => {
+      try {
+        console.log(`⏰ Manual timer start request: room ${roomId}, duration ${duration}s`);
+        
+        if (!roomId || !duration || duration <= 0) {
+          socket.emit("error", { message: "Invalid roomId or duration" });
+          return;
+        }
+
+        // Verify host permission
+        if (hostId) {
+          const gameRoom = await Game.findOne({ roomId });
+          if (!gameRoom) {
+            socket.emit("error", { message: "Room not found" });
+            return;
+          }
+
+          if (gameRoom.hostId.toString() !== hostId.toString()) {
+            socket.emit("error", { message: "Only host can manually start timer" });
+            return;
+          }
+        }
+
+        const success = await timerManager.startRoomTimer(roomId, duration);
+        if (success) {
+          socket.emit("timer_started", { roomId, duration });
+          console.log(`✅ Manual timer started for room ${roomId}`);
+        } else {
+          socket.emit("error", { message: "Failed to start timer" });
+        }
+      } catch (err) {
+        console.error("❌ start_timer error:", err.message);
+        socket.emit("error", { message: "Failed to start timer" });
+      }
     });
 
-    socket.on("get_room_info", async ({ roomId }) => {
+    // Get timer status
+    socket.on("get_timer_status", ({ roomId }) => {
       try {
         if (!roomId) {
           socket.emit("error", { message: "Missing roomId" });
           return;
         }
 
-        const gameRoom = await Game.findOne({ roomId })
-          .populate("players.userId", "username avatar")
-          .populate("hostId", "username avatar");
+        const timeLeft = timerManager.getTimeLeftForRoom(roomId);
+        socket.emit("timer_status", {
+          roomId,
+          timeLeft,
+          hasTimer: timeLeft !== null
+        });
 
-        if (!gameRoom) {
-          socket.emit("error", { message: "Room not found" });
-          return;
-        }
-
-        socket.emit("room_info", gameRoom);
+        console.log(`🔍 Timer status sent for room ${roomId}: ${timeLeft}s`);
       } catch (err) {
-        console.error("❌ get_room_info error:", err.message);
-        socket.emit("error", { message: "Failed to get room info" });
+        console.error("❌ get_timer_status error:", err.message);
+        socket.emit("error", { message: "Failed to get timer status" });
       }
     });
 
-    // ===== CONFIG EVENTS =====
-    socket.on("get_game_config", () => {
-      socket.emit("game_config", {
-        TEST_MODE: GAME_CONFIG.TEST_MODE,
-        MIN_PLAYERS: GAME_CONFIG.MIN_PLAYERS,
-        MAX_PLAYERS: GAME_CONFIG.MAX_PLAYERS,
-      });
+    // Force clear timer (admin only)
+    socket.on("clear_timer", async ({ roomId, adminId }) => {
+      try {
+        console.log(`🧹 Timer clear request: room ${roomId}`);
+        
+        if (!roomId) {
+          socket.emit("error", { message: "Missing roomId" });
+          return;
+        }
+
+        // Add admin verification here if needed
+        const cleared = timerManager.clearRoomTimer(roomId);
+        
+        if (cleared) {
+          io.to(roomId).emit("timer_cleared", { roomId });
+          socket.emit("timer_clear_success", { roomId });
+          console.log(`🧹 Timer cleared for room ${roomId}`);
+        } else {
+          socket.emit("error", { message: "No timer to clear" });
+        }
+      } catch (err) {
+        console.error("❌ clear_timer error:", err.message);
+        socket.emit("error", { message: "Failed to clear timer" });
+      }
     });
 
-    // ===== DISCONNECT EVENT =====
+    // Get timer health/stats (monitoring)
+    socket.on("get_timer_health", () => {
+      try {
+        const health = timerManager.healthCheck();
+        const stats = timerManager.getStats();
+        
+        socket.emit("timer_health", {
+          ...health,
+          stats
+        });
+        
+        console.log(`💊 Timer health sent to client ${socket.id}`);
+      } catch (err) {
+        console.error("❌ get_timer_health error:", err.message);
+        socket.emit("error", { message: "Failed to get timer health" });
+      }
+    });
+
+    // ===== GENERAL SOCKET EVENTS =====
+    
+    // Get all rooms
+    socket.on("get_rooms", async () => {
+      await sendRooms();
+    });
+
+    // Join specific room for updates
+    socket.on("join_room_channel", ({ roomId }) => {
+      if (roomId) {
+        socket.join(roomId);
+        console.log(`📡 Socket ${socket.id} joined room channel ${roomId}`);
+      }
+    });
+
+    // Leave room channel
+    socket.on("leave_room_channel", ({ roomId }) => {
+      if (roomId) {
+        socket.leave(roomId);
+        console.log(`📡 Socket ${socket.id} left room channel ${roomId}`);
+      }
+    });
+
+    // User identification for disconnect handling
+    socket.on("identify_user", ({ userId, roomId }) => {
+      socket.data = { userId, roomId };
+      console.log(`🆔 Socket ${socket.id} identified as user ${userId} in room ${roomId}`);
+    });
+
+    // Ping/pong for connection monitoring
+    socket.on("ping", () => {
+      socket.emit("pong", { timestamp: Date.now() });
+    });
+
+    // ===== DISCONNECT HANDLER =====
     socket.on("disconnect", () => {
+      console.log(`🔌 Client disconnected: ${socket.id}`);
       handleDisconnect(socket);
     });
 
-    // ===== ERROR HANDLING =====
+    // ===== ERROR HANDLER =====
     socket.on("error", (error) => {
-      console.error("❌ Socket error:", error);
-      socket.emit("error", { message: "Socket error occurred" });
+      console.error(`❌ Socket error for ${socket.id}:`, error);
     });
   });
 
-  // ===== CLEANUP ON PROCESS EXIT =====
-  process.on('SIGINT', () => {
-    console.log('🛑 Cleaning up timers...');
-    timerManager.clearAllTimers();
-    process.exit(0);
-  });
+  // ===== SERVER-LEVEL TIMER MANAGEMENT =====
+  
+  // Graceful shutdown - clear all timers
+  const gracefulShutdown = () => {
+    console.log("🛑 Graceful shutdown initiated - clearing all timers");
+    const clearedCount = timerManager.clearAllTimers();
+    console.log(`🧹 Cleared ${clearedCount} timers during shutdown`);
+  };
 
-  console.log('🚀 Socket.IO game handler initialized');
+  // Register shutdown handlers
+  process.on('SIGTERM', gracefulShutdown);
+  process.on('SIGINT', gracefulShutdown);
+
+  // Periodic health check (every 5 minutes)
+  setInterval(() => {
+    const health = timerManager.healthCheck();
+    const stats = timerManager.getStats();
+    
+    console.log(`📊 Periodic Timer Health Check:`, {
+      activeTimers: health.activeTimers,
+      memoryMB: health.memoryUsage.heapUsed,
+      healthy: health.healthy
+    });
+
+    // Clean up orphaned timers (rooms that no longer exist)
+    if (stats.totalTimers > 0) {
+      stats.rooms.forEach(async (roomId) => {
+        try {
+          const gameRoom = await Game.findOne({ roomId });
+          if (!gameRoom) {
+            console.log(`🧹 Cleaning up orphaned timer for room ${roomId}`);
+            timerManager.clearRoomTimer(roomId);
+          }
+        } catch (err) {
+          console.error(`❌ Error checking room ${roomId}:`, err.message);
+        }
+      });
+    }
+  }, 5 * 60 * 1000); // 5 minutes
+
+  // Send initial room list
+  sendRooms();
+
+  console.log("✅ Socket handler setup completed with timer integration");
 };
