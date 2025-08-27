@@ -23,10 +23,6 @@ export const setupRoomEvents = (socket, io, timerManager) => {
   // ===== JOIN ROOM EVENT - COMPLETELY FIXED =====
   socket.on("join_room", async ({ roomId, userId, username }) => {
     try {
-      console.log(
-        `🚪 User ${username} (${userId}) trying to join room ${roomId}`
-      );
-
       if (!roomId || !userId || !username) {
         socket.emit("error", {
           message: "Missing roomId, userId, or username",
@@ -184,13 +180,6 @@ export const setupRoomEvents = (socket, io, timerManager) => {
           // Wait before retry
           await new Promise((resolve) => setTimeout(resolve, 100 * retryCount));
         }
-      }
-
-      if (!saveSuccess) {
-        socket.emit("error", {
-          message: "Failed to join room after multiple attempts",
-        });
-        return;
       }
 
       // ✅ STEP 8: Socket and response handling
@@ -411,7 +400,6 @@ export const setupRoomEvents = (socket, io, timerManager) => {
     }
   });
 
-  console.log("✅ Room events setup completed with duplicate prevention");
   // ===== CREATE ROOM EVENT =====
   socket.on("create_room", async (data) => {
     try {
@@ -422,22 +410,12 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         return;
       }
 
-      // ✅ Host user mavjudligini tekshirish
       const owner = await User.findById(data.hostId);
+      console.log("<<<<< host id: ", owner);
       if (!owner) {
         socket.emit("error", { message: "Host user not found" });
         return;
       }
-
-      // ✅ User boshqa roomda emasligini tekshirish
-      const existingRoom = await Game.findOne({
-        "players.userId": data.hostId,
-      });
-      // if (existingRoom) {
-      //   console.log(`❌ User ${owner.username} already in room ${existingRoom.roomId}`);
-      //   socket.emit("error", { message: "You are already in another room" });
-      //   return;
-      // }
 
       const newRoom = await Game.create({
         roomId: uniqId(),
@@ -476,179 +454,6 @@ export const setupRoomEvents = (socket, io, timerManager) => {
     } catch (err) {
       console.error("❌ create_room error:", err.message);
       socket.emit("error", { message: "Failed to create room" });
-    }
-  });
-
-  // ===== JOIN ROOM EVENT =====
-  socket.on("join_room", async ({ roomId, userId, username }) => {
-    try {
-      console.log(`🚪 User ${username} (${userId}) trying to join room ${roomId}`);
-  
-      if (!roomId || !userId || !username) {
-        socket.emit("error", { message: "Missing roomId, userId, or username" });
-        return;
-      }
-  
-      let gameRoom = await Game.findOne({ roomId });
-      if (!gameRoom) {
-        socket.emit("error", { message: "Room not found" });
-        return;
-      }
-  
-      // Check if game is in progress
-      if (gameRoom.phase !== "waiting") {
-        socket.emit("error", { message: "Cannot join room: game is in progress" });
-        return;
-      }
-  
-      // ✅ Current presence in THIS room (from the DB snapshot we have)
-      const alreadyInThisRoom = gameRoom.players.some(
-        (p) => p.userId.toString() === userId.toString()
-      );
-  
-      console.log(`🔍 Already in this room (${roomId}): ${alreadyInThisRoom}`);
-      console.log(
-        `📋 Current players:`,
-        gameRoom.players.map((p) => ({
-          userId: p.userId.toString(),
-          username: p.username,
-        }))
-      );
-  
-      // If not already in this room, clean up other rooms and atomically add
-      if (!alreadyInThisRoom) {
-        // ✅ Check for other rooms and auto-leave
-        const otherRooms = await Game.find({
-          "players.userId": userId,
-          roomId: { $ne: roomId },
-          $or: [{ phase: "waiting" }, { phase: "started" }, { phase: "night" }, { phase: "day" }],
-        });
-  
-        console.log(`🔍 User ${userId} found in ${otherRooms.length} other active rooms`);
-  
-        if (otherRooms.length > 0) {
-          console.log(`❌ User ${userId} is in other rooms:`, otherRooms.map((r) => r.roomId));
-  
-          for (const otherRoom of otherRooms) {
-            console.log(`🧹 Auto-removing user ${userId} from room ${otherRoom.roomId}`);
-  
-            const wasHostInOtherRoom = otherRoom.hostId?.toString() === userId.toString();
-  
-            otherRoom.players = otherRoom.players.filter(
-              (p) => p.userId.toString() !== userId.toString()
-            );
-  
-            if (otherRoom.players.length === 0) {
-              await Game.deleteOne({ roomId: otherRoom.roomId });
-              io.to(otherRoom.roomId).emit("room_closed");
-              timerManager.clearRoomTimer(otherRoom.roomId);
-              console.log(`🗑️ Empty room ${otherRoom.roomId} auto-deleted`);
-            } else {
-              if (wasHostInOtherRoom && otherRoom.players.length > 0) {
-                otherRoom.hostId = otherRoom.players[0].userId;
-                io.to(otherRoom.roomId).emit("new_host", {
-                  newHostId: otherRoom.hostId,
-                  newHostUsername: otherRoom.players[0].username,
-                });
-                console.log(
-                  `👑 New host assigned in room ${otherRoom.roomId}: ${otherRoom.players[0].username}`
-                );
-              }
-              await otherRoom.save();
-              io.to(otherRoom.roomId).emit("update_players", otherRoom.players);
-            }
-          }
-  
-          console.log(`✅ User ${userId} auto-cleaned from ${otherRooms.length} rooms`);
-        }
-  
-        // ✅ Atomically add the player IF not already present AND capacity not exceeded
-        const playerDoc = {
-          userId,
-          username,
-          isAlive: true,
-          isReady: false,
-          votes: 0,
-          isHealed: false,
-          hasVoted: false,
-          voice: [],
-        };
-  
-        // Guard capacity with $expr and ensure user not present with players.userId != userId
-        const updatedRoom = await Game.findOneAndUpdate(
-          {
-            roomId,
-            phase: "waiting",
-            "players.userId": { $ne: userId },
-            $expr: { $lt: [{ $size: "$players" }, GAME_CONFIG.MAX_PLAYERS] },
-          },
-          { $push: { players: playerDoc } },
-          { new: true }
-        );
-  
-        if (!updatedRoom) {
-          // Could be because room got full or state changed or user already present (race)
-          // Re-fetch to get the actual current state and respond accordingly
-          gameRoom = await Game.findOne({ roomId });
-  
-          if (!gameRoom) {
-            socket.emit("error", { message: "Room not found" });
-            return;
-          }
-  
-          if (gameRoom.players.length >= GAME_CONFIG.MAX_PLAYERS) {
-            socket.emit("error", { message: "Room is full" });
-            return;
-          }
-  
-          // If user is already present (race), proceed
-          const nowPresent = gameRoom.players.some(
-            (p) => p.userId.toString() === userId.toString()
-          );
-          if (!nowPresent) {
-            socket.emit("error", { message: "Failed to join room" });
-            return;
-          }
-        } else {
-          gameRoom = updatedRoom; // use the newest doc after atomic push
-          console.log(`✅ User ${username} added to room ${roomId}`);
-        }
-      } else {
-        console.log(`ℹ️ User ${username} already in room ${roomId}, skipping add`);
-      }
-  
-      // ✅ Safety: de-duplicate players by userId in case legacy duplicates exist
-      const seen = new Set();
-      const dedupedPlayers = [];
-      for (const p of gameRoom.players) {
-        const key = p.userId.toString();
-        if (!seen.has(key)) {
-          seen.add(key);
-          dedupedPlayers.push(p);
-        }
-      }
-      if (dedupedPlayers.length !== gameRoom.players.length) {
-        gameRoom.players = dedupedPlayers;
-        await gameRoom.save();
-        console.log(`🧽 De-duplicated players in room ${roomId}`);
-      }
-  
-      // ✅ Always set socket data & join socket.io room
-      socket.join(roomId);
-      socket.data.userId = userId;
-      socket.data.roomId = roomId;
-  
-      // Emit with the latest room snapshot
-      socket.emit("joined_room", gameRoom);
-      io.to(roomId).emit("update_players", gameRoom.players);
-      io.to(roomId).emit("game_phase", gameRoom);
-  
-      await sendRooms();
-  
-      console.log(`✅ User ${username} successfully joined room ${roomId}`);
-    } catch (err) {
-      console.error("❌ join_room error:", err.message);
-      socket.emit("error", { message: "Failed to join room" });
     }
   });
   
@@ -780,14 +585,12 @@ export const setupRoomEvents = (socket, io, timerManager) => {
       console.log(`📊 Players after remove: ${gameRoom.players.length}`);
 
       if (gameRoom.players.length === 0) {
-        // ✅ Delete empty room completely
         await Game.deleteOne({ roomId });
         io.to(roomId).emit("room_closed");
         timerManager.clearRoomTimer(roomId);
         console.log(`🗑️ Empty room ${roomId} deleted completely`);
       } else {
-        // ✅ Assign new host if needed
-        if (wasHost && gameRoom.players.length > 0) {
+          if (wasHost && gameRoom.players.length > 0) {
           gameRoom.hostId = gameRoom.players[0].userId;
           io.to(roomId).emit("new_host", {
             newHostId: gameRoom.hostId,
@@ -796,7 +599,6 @@ export const setupRoomEvents = (socket, io, timerManager) => {
           console.log(`👑 New host assigned: ${gameRoom.players[0].username}`);
         }
 
-        // ✅ Save room changes
         await gameRoom.save();
         io.to(roomId).emit("update_players", gameRoom.players);
         console.log(
@@ -804,12 +606,10 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         );
       }
 
-      // ✅ IMPORTANT: Clean up socket data immediately
       socket.leave(roomId);
       socket.data.userId = null;
       socket.data.roomId = null;
 
-      // ✅ Update rooms list
       await sendRooms();
 
       // ✅ Confirm leave to user
@@ -898,13 +698,11 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         );
 
         if (gameRoom.players.length === 0) {
-          // Delete empty room
           await Game.deleteOne({ roomId: gameRoom.roomId });
           io.to(gameRoom.roomId).emit("room_closed");
           timerManager.clearRoomTimer(gameRoom.roomId);
           console.log(`🗑️ Empty room ${gameRoom.roomId} deleted on disconnect`);
         } else {
-          // If host disconnected, assign new host
           if (wasHost && gameRoom.players.length > 0) {
             gameRoom.hostId = gameRoom.players[0].userId;
             io.to(gameRoom.roomId).emit("new_host", {
@@ -987,6 +785,5 @@ export const setupRoomEvents = (socket, io, timerManager) => {
     }
   });
 
-  // ✅ Return handleDisconnect for use in main socket handler
   return { handleDisconnect };
 };
