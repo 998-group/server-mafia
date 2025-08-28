@@ -1,4 +1,5 @@
 import Game from "../models/Game.js";
+import { TimerManager } from "./helpers/timerManager.js";
 
 export function handleGameEvents(io, socket, roomTimers) {
   socket.on("ready", async ({ roomId, userId }) => {
@@ -166,3 +167,5 @@ function generateRoles(playerCount) {
 function getTimeLeftForRoom(roomTimers, roomId) {
   return roomTimers[roomId]?.timeLeft ?? null;
 }
+
+TimerManager.startRoomTimer(roomId, GAME_CONFIG.PHASE_DURATIONS.night);

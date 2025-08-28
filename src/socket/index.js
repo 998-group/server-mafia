@@ -1,6 +1,6 @@
-// 🔧 CLIENT-SIDE DUPLICATE PREVENTION
+// 🔧 COMPLETE CLIENT-SIDE SOCKET MANAGER WITH DUPLICATE PREVENTION
+// src/socket/index.js
 
-// src/socket/index.js - Client Socket Configuration
 import { io } from 'socket.io-client';
 
 class SocketManager {
@@ -10,6 +10,9 @@ class SocketManager {
     this.currentRoomId = null;
     this.pendingJoinRequests = new Map(); // Prevent duplicate join requests
     this.lastJoinAttempt = null;
+    this.joinCooldownMs = 2000; // 2 second cooldown between joins
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
   }
 
   connect() {
@@ -28,14 +31,15 @@ class SocketManager {
       forceNew: false, // ✅ Prevent multiple connections
       reconnection: true,
       reconnectionDelay: 1000,
-      reconnectionAttempts: 3,
-      maxReconnectionAttempts: 3
+      reconnectionAttempts: 5,
+      maxReconnectionAttempts: 5
     });
 
     // ✅ Connection event handlers
     this.socket.on('connect', () => {
       console.log('✅ Socket connected:', this.socket.id);
       this.isConnecting = false;
+      this.reconnectAttempts = 0;
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -43,241 +47,405 @@ class SocketManager {
       this.isConnecting = false;
       this.currentRoomId = null;
       this.pendingJoinRequests.clear();
+      this.lastJoinAttempt = null;
     });
 
     this.socket.on('connect_error', (error) => {
       console.error('❌ Socket connection error:', error);
       this.isConnecting = false;
+      this.reconnectAttempts++;
+      
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error('❌ Max reconnection attempts reached');
+        this.pendingJoinRequests.clear();
+      }
+    });
+
+    // ✅ Handle reconnection
+    this.socket.on('reconnect', (attemptNumber) => {
+      console.log(`🔄 Reconnected after ${attemptNumber} attempts`);
+      this.reconnectAttempts = 0;
+      
+      // Clear any stale pending requests after reconnection
+      this.pendingJoinRequests.clear();
+      this.lastJoinAttempt = null;
     });
 
     return this.socket;
   }
 
-  // ✅ SAFE ROOM JOIN WITH DUPLICATE PREVENTION
+  // ✅ SAFE ROOM JOIN WITH COMPREHENSIVE DUPLICATE PREVENTION
   joinRoom(roomId, userId, username) {
     return new Promise((resolve, reject) => {
+      // ✅ STEP 1: Connection check
       if (!this.socket?.connected) {
         reject(new Error('Socket not connected'));
         return;
       }
 
-      // ✅ Prevent duplicate requests
-      const requestKey = `${roomId}-${userId}`;
+      // ✅ STEP 2: Input validation
+      if (!roomId || !userId || !username) {
+        reject(new Error('Missing required parameters: roomId, userId, or username'));
+        return;
+      }
+
+      // Clean inputs
+      roomId = roomId.toString().trim();
+      userId = userId.toString().trim();
+      username = username.toString().trim();
+
+      // ✅ STEP 3: Cooldown check - prevent rapid successive joins
       const now = Date.now();
+      if (this.lastJoinAttempt && (now - this.lastJoinAttempt) < this.joinCooldownMs) {
+        const remainingCooldown = this.joinCooldownMs - (now - this.lastJoinAttempt);
+        console.log(`🚫 Join request blocked - cooldown active: ${Math.ceil(remainingCooldown/1000)}s remaining`);
+        reject(new Error(`Please wait ${Math.ceil(remainingCooldown/1000)} seconds before trying again`));
+        return;
+      }
+
+      // ✅ STEP 4: Check if already in target room
+      if (this.currentRoomId === roomId) {
+        console.log(`ℹ️ Already in room ${roomId}, skipping join request`);
+        resolve({ 
+          roomId, 
+          message: 'Already in room',
+          alreadyInRoom: true 
+        });
+        return;
+      }
+
+      // ✅ STEP 5: Prevent duplicate requests to same room
+      const requestKey = `${roomId}-${userId}`;
       
       if (this.pendingJoinRequests.has(requestKey)) {
-        const lastRequest = this.pendingJoinRequests.get(requestKey);
-        if (now - lastRequest < 2000) { // 2 second cooldown
-          console.log(`🚫 Join request blocked - too recent (${now - lastRequest}ms ago)`);
-          reject(new Error('Please wait before trying again'));
+        const pendingTime = this.pendingJoinRequests.get(requestKey);
+        const timePending = now - pendingTime;
+        
+        if (timePending < 10000) { // 10 second pending timeout
+          console.log(`🚫 Join request blocked - already pending for ${Math.ceil(timePending/1000)}s`);
+          reject(new Error('Join request already in progress'));
           return;
+        } else {
+          // Clear stale pending request
+          console.log(`🧹 Clearing stale pending request (${Math.ceil(timePending/1000)}s old)`);
+          this.pendingJoinRequests.delete(requestKey);
         }
       }
 
-      // ✅ Check if already in this room
-      if (this.currentRoomId === roomId) {
-        console.log(`ℹ️ Already in room ${roomId}, skipping join request`);
-        resolve({ roomId, message: 'Already in room' });
-        return;
-      }
+      console.log(`🚪 Attempting to join room: ${roomId} as ${username} (${userId})`);
 
-      console.log(`🚪 Attempting to join room: ${roomId} as ${username}`);
-      
-      // Mark request as pending
+      // ✅ STEP 6: Mark as pending and set cooldown
       this.pendingJoinRequests.set(requestKey, now);
+      this.lastJoinAttempt = now;
 
-      // Set up one-time event listeners
-      const onJoined = (roomData) => {
-        console.log(`✅ Successfully joined room: ${roomId}`);
-        this.currentRoomId = roomId;
+      // ✅ STEP 7: Set up response handlers with cleanup
+      let resolved = false;
+      let timeoutId = null;
+
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
         this.pendingJoinRequests.delete(requestKey);
         this.socket.off('joined_room', onJoined);
         this.socket.off('error', onError);
-        resolve(roomData);
+      };
+
+      const onJoined = (gameRoom) => {
+        if (resolved) return;
+        resolved = true;
+        
+        console.log(`✅ Successfully joined room: ${roomId}`);
+        this.currentRoomId = roomId;
+        
+        cleanup();
+        resolve(gameRoom);
       };
 
       const onError = (error) => {
-        console.error(`❌ Failed to join room ${roomId}:`, error.message);
-        this.pendingJoinRequests.delete(requestKey);
-        this.socket.off('joined_room', onJoined);
-        this.socket.off('error', onError);
-        reject(new Error(error.message));
+        if (resolved) return;
+        resolved = true;
+        
+        console.error(`❌ Failed to join room ${roomId}:`, error.message || error);
+        
+        cleanup();
+        reject(new Error(error.message || 'Unknown error occurred'));
       };
 
-      // Set timeout for request
-      const timeout = setTimeout(() => {
-        console.error(`⏰ Join room timeout for ${roomId}`);
-        this.pendingJoinRequests.delete(requestKey);
-        this.socket.off('joined_room', onJoined);
-        this.socket.off('error', onError);
-        reject(new Error('Join request timeout'));
-      }, 10000); // 10 second timeout
+      // ✅ STEP 8: Set up timeout protection
+      timeoutId = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        
+        console.error(`⏰ Join room timeout for ${roomId} after 10 seconds`);
+        
+        cleanup();
+        reject(new Error('Join request timeout - server did not respond'));
+      }, 10000);
 
+      // ✅ STEP 9: Attach one-time event listeners
       this.socket.once('joined_room', onJoined);
       this.socket.once('error', onError);
 
-      // Send join request
-      this.socket.emit('join_room', { roomId, userId, username });
-
-      // Clear timeout when resolved/rejected
-      Promise.race([
-        new Promise(resolve => this.socket.once('joined_room', resolve)),
-        new Promise((_, reject) => this.socket.once('error', reject))
-      ]).finally(() => {
-        clearTimeout(timeout);
-      });
+      // ✅ STEP 10: Send join request
+      try {
+        this.socket.emit('join_room', { 
+          roomId, 
+          userId, 
+          username 
+        });
+        console.log(`📤 Join request sent for room ${roomId}`);
+      } catch (emitError) {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          reject(new Error(`Failed to send join request: ${emitError.message}`));
+        }
+      }
     });
   }
 
-  // ✅ SAFE ROOM LEAVE
+  // ✅ SAFE ROOM LEAVE WITH COMPREHENSIVE ERROR HANDLING
   leaveRoom(roomId, userId) {
     return new Promise((resolve, reject) => {
+      // ✅ Connection check
       if (!this.socket?.connected) {
         reject(new Error('Socket not connected'));
         return;
       }
 
-      if (this.currentRoomId !== roomId) {
-        console.log(`ℹ️ Not in room ${roomId}, skipping leave request`);
-        resolve({ message: 'Not in room' });
+      // ✅ Input validation
+      if (!roomId || !userId) {
+        reject(new Error('Missing required parameters: roomId or userId'));
         return;
       }
 
-      console.log(`🚪 Leaving room: ${roomId}`);
+      // Clean inputs
+      roomId = roomId.toString().trim();
+      userId = userId.toString().trim();
 
-      const onLeft = (response) => {
-        console.log(`✅ Successfully left room: ${roomId}`);
-        this.currentRoomId = null;
+      // ✅ Check if actually in the room
+      if (this.currentRoomId !== roomId) {
+        console.log(`ℹ️ Not in room ${roomId}, skipping leave request`);
+        resolve({ 
+          message: 'Not in room',
+          wasInRoom: false 
+        });
+        return;
+      }
+
+      console.log(`🚪 Attempting to leave room: ${roomId}`);
+
+      // ✅ Set up response handlers
+      let resolved = false;
+      let timeoutId = null;
+
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
         this.socket.off('left_room', onLeft);
         this.socket.off('error', onError);
-        resolve(response);
+      };
+
+      const onLeft = (response) => {
+        if (resolved) return;
+        resolved = true;
+        
+        console.log(`✅ Successfully left room: ${roomId}`);
+        this.currentRoomId = null;
+        
+        cleanup();
+        resolve(response || { message: 'Left room successfully' });
       };
 
       const onError = (error) => {
-        console.error(`❌ Failed to leave room ${roomId}:`, error.message);
-        this.socket.off('left_room', onLeft);
-        this.socket.off('error', onError);
-        reject(new Error(error.message));
+        if (resolved) return;
+        resolved = true;
+        
+        console.error(`❌ Failed to leave room ${roomId}:`, error.message || error);
+        
+        cleanup();
+        reject(new Error(error.message || 'Unknown error occurred'));
       };
 
+      // ✅ Timeout protection
+      timeoutId = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        
+        console.error(`⏰ Leave room timeout for ${roomId}`);
+        
+        // Assume left on timeout
+        this.currentRoomId = null;
+        
+        cleanup();
+        resolve({ message: 'Leave request timeout - assumed successful' });
+      }, 5000);
+
+      // ✅ Attach event listeners
       this.socket.once('left_room', onLeft);
       this.socket.once('error', onError);
 
-      this.socket.emit('leave_room', { roomId, userId });
-
-      // Timeout
-      setTimeout(() => {
-        this.socket.off('left_room', onLeft);
-        this.socket.off('error', onError);
-        reject(new Error('Leave request timeout'));
-      }, 5000);
+      // ✅ Send leave request
+      try {
+        this.socket.emit('leave_room', { roomId, userId });
+        console.log(`📤 Leave request sent for room ${roomId}`);
+      } catch (emitError) {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          reject(new Error(`Failed to send leave request: ${emitError.message}`));
+        }
+      }
     });
   }
 
   // ✅ CLEANUP DUPLICATES (ADMIN FUNCTION)
-  cleanupDuplicates(roomId) {
+  cleanupDuplicates(roomId, adminId = null) {
     if (!this.socket?.connected) {
       console.error('Socket not connected');
-      return;
+      return Promise.reject(new Error('Socket not connected'));
     }
 
-    console.log(`🧹 Requesting duplicate cleanup for room: ${roomId}`);
-    this.socket.emit('cleanup_room_duplicates', { roomId });
+    if (!roomId) {
+      console.error('Missing roomId for cleanup');
+      return Promise.reject(new Error('Missing roomId'));
+    }
+
+    return new Promise((resolve, reject) => {
+      console.log(`🧹 Requesting duplicate cleanup for room: ${roomId}`);
+
+      // Set up response handlers
+      const onNotification = (notification) => {
+        if (notification.type === 'success' && notification.message.includes('duplicate')) {
+          console.log(`✅ Cleanup successful: ${notification.message}`);
+          this.socket.off('notification', onNotification);
+          resolve(notification);
+        }
+      };
+
+      const onError = (error) => {
+        console.error(`❌ Cleanup failed:`, error.message);
+        this.socket.off('notification', onNotification);
+        this.socket.off('error', onError);
+        reject(new Error(error.message));
+      };
+
+      // Listen for responses
+      this.socket.on('notification', onNotification);
+      this.socket.once('error', onError);
+
+      // Send cleanup request
+      this.socket.emit('cleanup_room_duplicates', { roomId, adminId });
+
+      // Timeout
+      setTimeout(() => {
+        this.socket.off('notification', onNotification);
+        this.socket.off('error', onError);
+        resolve({ message: 'Cleanup request sent (no response timeout)' });
+      }, 5000);
+    });
   }
 
-  // ✅ GET CURRENT ROOM STATE
+  // ✅ FORCE CLEAR PENDING REQUESTS (for debugging/recovery)
+  clearPendingRequests() {
+    const pendingCount = this.pendingJoinRequests.size;
+    console.log(`🧹 Clearing ${pendingCount} pending join requests`);
+    this.pendingJoinRequests.clear();
+    this.lastJoinAttempt = null;
+    return pendingCount;
+  }
+
+  // ✅ GET STATUS AND DEBUG INFO
   getCurrentRoomId() {
     return this.currentRoomId;
   }
 
-  // ✅ CHECK CONNECTION STATUS
   isConnected() {
     return this.socket?.connected || false;
   }
 
-  // ✅ DISCONNECT
-  disconnect() {
+  getPendingRequestsCount() {
+    return this.pendingJoinRequests.size;
+  }
+
+  getConnectionInfo() {
+    return {
+      connected: this.isConnected(),
+      connecting: this.isConnecting,
+      currentRoom: this.currentRoomId,
+      pendingRequests: this.getPendingRequestsCount(),
+      reconnectAttempts: this.reconnectAttempts,
+      socketId: this.socket?.id || null
+    };
+  }
+
+  // ✅ EMERGENCY RESET (for development/debugging)
+  emergencyReset() {
+    console.warn('🚨 Emergency reset triggered');
+    this.currentRoomId = null;
+    this.pendingJoinRequests.clear();
+    this.lastJoinAttempt = null;
+    this.isConnecting = false;
+    this.reconnectAttempts = 0;
+    
     if (this.socket) {
+      this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
-      this.currentRoomId = null;
-      this.pendingJoinRequests.clear();
-      this.isConnecting = false;
     }
+  }
+
+  // ✅ GRACEFUL DISCONNECT
+  disconnect() {
+    console.log('🔌 Disconnecting socket manager');
+    
+    if (this.socket) {
+      // Clear all pending requests
+      this.pendingJoinRequests.clear();
+      
+      // Remove all listeners
+      this.socket.removeAllListeners();
+      
+      // Disconnect
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    
+    // Reset state
+    this.currentRoomId = null;
+    this.isConnecting = false;
+    this.lastJoinAttempt = null;
+    this.reconnectAttempts = 0;
   }
 }
 
 // ✅ SINGLETON INSTANCE
 const socketManager = new SocketManager();
-export default socketManager.connect();
+
+// ✅ AUTO-CONNECT AND CREATE SOCKET
+const socket = socketManager.connect();
+
+// ✅ EXPORTS
+export default socket;
 export { socketManager };
 
-// ✅ REACT HOOK FOR SAFE ROOM OPERATIONS
-import { useState, useEffect, useCallback } from 'react';
-import { useSelector } from 'react-redux';
+// ✅ DEVELOPMENT MODE DEBUG HELPERS
+if (process.env.NODE_ENV === 'development') {
+  // Attach to window for debugging
+  window.socketManager = socketManager;
+  window.clearPendingRequests = () => socketManager.clearPendingRequests();
+  window.getConnectionInfo = () => socketManager.getConnectionInfo();
+  window.emergencyReset = () => socketManager.emergencyReset();
+  
+  console.log('🛠️ Development mode: Socket debug helpers attached to window');
+  console.log('  - window.socketManager');
+  console.log('  - window.clearPendingRequests()');
+  console.log('  - window.getConnectionInfo()');
+  console.log('  - window.emergencyReset()');
+}
 
-export const useRoomOperations = () => {
-  const user = useSelector(state => state.auth?.user);
-  const [isJoining, setIsJoining] = useState(false);
-  const [isLeaving, setIsLeaving] = useState(false);
-  const [currentRoom, setCurrentRoom] = useState(null);
-
-  // ✅ SAFE JOIN ROOM
-  const joinRoom = useCallback(async (roomId, roomName) => {
-    if (!user?._id || isJoining) {
-      console.log('Cannot join room: missing user or already joining');
-      return { success: false, error: 'Cannot join room' };
-    }
-
-    setIsJoining(true);
-    
-    try {
-      const result = await socketManager.joinRoom(roomId, user._id, user.username);
-      setCurrentRoom({ roomId, roomName });
-      console.log(`✅ Join room success:`, result);
-      return { success: true, data: result };
-    } catch (error) {
-      console.error(`❌ Join room failed:`, error.message);
-      return { success: false, error: error.message };
-    } finally {
-      setIsJoining(false);
-    }
-  }, [user, isJoining]);
-
-  // ✅ SAFE LEAVE ROOM  
-  const leaveRoom = useCallback(async (roomId) => {
-    if (!user?._id || isLeaving) {
-      console.log('Cannot leave room: missing user or already leaving');
-      return { success: false, error: 'Cannot leave room' };
-    }
-
-    setIsLeaving(true);
-    
-    try {
-      const result = await socketManager.leaveRoom(roomId, user._id);
-      setCurrentRoom(null);
-      console.log(`✅ Leave room success:`, result);
-      return { success: true, data: result };
-    } catch (error) {
-      console.error(`❌ Leave room failed:`, error.message);
-      return { success: false, error: error.message };
-    } finally {
-      setIsLeaving(false);
-    }
-  }, [user, isLeaving]);
-
-  // ✅ CLEANUP DUPLICATES
-  const cleanupDuplicates = useCallback((roomId) => {
-    socketManager.cleanupDuplicates(roomId);
-  }, []);
-
-  return {
-    joinRoom,
-    leaveRoom,
-    cleanupDuplicates,
-    isJoining,
-    isLeaving,
-    currentRoom,
-    isConnected: socketManager.isConnected()
-  };
-};
+console.log("✅ Enhanced SocketManager loaded with comprehensive duplicate prevention");

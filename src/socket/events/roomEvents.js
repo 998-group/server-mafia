@@ -479,13 +479,22 @@ export const setupRoomEvents = (socket, io, timerManager) => {
     }
   });
 
-  // ===== JOIN ROOM EVENT =====
+  // 🚨 CRITICAL FIX: Prevent Duplicate Users in Room Join
+  // Location: src/socket/events/roomEvents.js
+
+  // Add this at the top of the file
+  const pendingJoins = new Map(); // Track pending join requests
+
+  // Replace the existing join_room event handler with this fixed version:
   socket.on("join_room", async ({ roomId, userId, username }) => {
+    const requestKey = `${roomId}-${userId}`;
+
     try {
       console.log(
         `🚪 User ${username} (${userId}) trying to join room ${roomId}`
       );
 
+      // ✅ STEP 1: Input validation
       if (!roomId || !userId || !username) {
         socket.emit("error", {
           message: "Missing roomId, userId, or username",
@@ -493,139 +502,263 @@ export const setupRoomEvents = (socket, io, timerManager) => {
         return;
       }
 
-      const gameRoom = await Game.findOne({ roomId });
+      // ✅ STEP 2: Prevent duplicate requests (CRITICAL FIX)
+      if (pendingJoins.has(requestKey)) {
+        console.log(
+          `🚫 Duplicate join request blocked for user ${userId} in room ${roomId}`
+        );
+        socket.emit("error", { message: "Join request already in progress" });
+        return;
+      }
+
+      // Mark as pending
+      pendingJoins.set(requestKey, Date.now());
+
+      // Auto-cleanup after 10 seconds
+      setTimeout(() => {
+        pendingJoins.delete(requestKey);
+      }, 10000);
+
+      // ✅ STEP 3: Room validation with retry logic
+      let gameRoom;
+      const maxRetries = 3;
+
+      for (let retryCount = 0; retryCount <= maxRetries; retryCount++) {
+        try {
+          gameRoom = await Game.findOne({ roomId });
+          if (gameRoom) break;
+        } catch (err) {
+          if (retryCount === maxRetries) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+
       if (!gameRoom) {
+        pendingJoins.delete(requestKey);
         socket.emit("error", { message: "Room not found" });
         return;
       }
 
-      // Check if game is in progress
+      // ✅ STEP 4: Game phase check
       if (gameRoom.phase !== "waiting") {
+        pendingJoins.delete(requestKey);
         socket.emit("error", {
           message: "Cannot join room: game is in progress",
         });
         return;
       }
 
-      // ✅ IMPROVED: Check if already in THIS room
-      const alreadyInThisRoom = gameRoom.players.some(
+      // ✅ STEP 5: Room capacity check
+      if (gameRoom.players.length >= GAME_CONFIG.MAX_PLAYERS) {
+        pendingJoins.delete(requestKey);
+        socket.emit("error", { message: "Room is full" });
+        return;
+      }
+
+      // ✅ STEP 6: ATOMIC DUPLICATE CHECK AND ADD
+      const existingPlayerIndex = gameRoom.players.findIndex(
         (p) => p.userId.toString() === userId.toString()
       );
 
-      console.log(`🔍 Already in this room (${roomId}): ${alreadyInThisRoom}`);
-      console.log(
-        `📋 Current players:`,
-        gameRoom.players.map((p) => ({
-          userId: p.userId.toString(),
-          username: p.username,
-        }))
-      );
-
-      if (!alreadyInThisRoom) {
-        // ✅ IMPROVED: Check for other rooms with better query
-        const otherRooms = await Game.find({
-          "players.userId": userId,
-          roomId: { $ne: roomId }, // Exclude current room
-          $or: [
-            { phase: "waiting" },
-            { phase: "started" },
-            { phase: "night" },
-            { phase: "day" },
-          ],
-        });
-
+      if (existingPlayerIndex !== -1) {
         console.log(
-          `🔍 User ${userId} found in ${otherRooms.length} other active rooms`
+          `🔍 User ${username} already exists in room ${roomId} at index ${existingPlayerIndex}`
         );
 
-        if (otherRooms.length > 0) {
-          console.log(
-            `❌ User ${userId} is in other rooms:`,
-            otherRooms.map((r) => r.roomId)
-          );
+        // Update existing player info and handle socket join
+        gameRoom.players[existingPlayerIndex].username = username.trim();
 
-          // ✅ AUTO-LEAVE: Remove from other rooms
-          for (const otherRoom of otherRooms) {
-            console.log(
-              `🧹 Auto-removing user ${userId} from room ${otherRoom.roomId}`
-            );
-
-            const wasHostInOtherRoom =
-              otherRoom.hostId.toString() === userId.toString();
-
-            otherRoom.players = otherRoom.players.filter(
-              (p) => p.userId.toString() !== userId.toString()
-            );
-
-            if (otherRoom.players.length === 0) {
-              await Game.deleteOne({ roomId: otherRoom.roomId });
-              io.to(otherRoom.roomId).emit("room_closed");
-              timerManager.clearRoomTimer(otherRoom.roomId);
-              console.log(`🗑️ Empty room ${otherRoom.roomId} auto-deleted`);
-            } else {
-              // If was host, assign new host
-              if (wasHostInOtherRoom && otherRoom.players.length > 0) {
-                otherRoom.hostId = otherRoom.players[0].userId;
-                io.to(otherRoom.roomId).emit("new_host", {
-                  newHostId: otherRoom.hostId,
-                  newHostUsername: otherRoom.players[0].username,
-                });
-                console.log(
-                  `👑 New host assigned in room ${otherRoom.roomId}: ${otherRoom.players[0].username}`
-                );
-              }
-              await otherRoom.save();
-              io.to(otherRoom.roomId).emit("update_players", otherRoom.players);
-            }
-          }
-
-          console.log(
-            `✅ User ${userId} auto-cleaned from ${otherRooms.length} rooms`
+        try {
+          await gameRoom.save();
+        } catch (saveErr) {
+          console.warn(
+            `⚠️ Failed to update existing player: ${saveErr.message}`
           );
         }
 
-        // ✅ Check room capacity
-        if (gameRoom.players.length >= GAME_CONFIG.MAX_PLAYERS) {
-          socket.emit("error", { message: "Room is full" });
-          return;
-        }
+        // Join socket to room
+        socket.join(roomId);
+        socket.data = { userId, roomId };
 
-        // ✅ Add player to room
-        gameRoom.players.push({
-          userId,
-          username,
-          isAlive: true,
-          isReady: false,
-          votes: 0,
-          isHealed: false,
-          hasVoted: false,
-          voice: [],
-        });
-        await gameRoom.save();
-        console.log(`✅ User ${username} added to room ${roomId}`);
-      } else {
+        // Send responses
+        socket.emit("joined_room", gameRoom);
+        io.to(roomId).emit("update_players", gameRoom.players);
+
         console.log(
-          `ℹ️ User ${username} already in room ${roomId}, skipping add`
+          `ℹ️ User ${username} already in room ${roomId}, sending current state`
         );
+
+        // Cleanup and send rooms
+        pendingJoins.delete(requestKey);
+        await sendRooms();
+        return;
       }
 
-      // ✅ Always set socket data
-      socket.join(roomId);
-      socket.data.userId = userId;
-      socket.data.roomId = roomId;
+      // ✅ STEP 7: Remove user from other rooms first
+      const otherRooms = await Game.find({
+        "players.userId": userId,
+        roomId: { $ne: roomId },
+        $or: [
+          { phase: "waiting" },
+          { phase: "started" },
+          { phase: "night" },
+          { phase: "day" },
+        ],
+      });
 
+      console.log(
+        `🔍 User ${userId} found in ${otherRooms.length} other active rooms`
+      );
+
+      for (const otherRoom of otherRooms) {
+        console.log(
+          `🧹 Auto-removing user ${userId} from room ${otherRoom.roomId}`
+        );
+
+        const wasHost = otherRoom.hostId.toString() === userId.toString();
+
+        // Remove player from other room
+        otherRoom.players = otherRoom.players.filter(
+          (p) => p.userId.toString() !== userId.toString()
+        );
+
+        if (otherRoom.players.length === 0) {
+          await Game.deleteOne({ roomId: otherRoom.roomId });
+          io.to(otherRoom.roomId).emit("room_closed", { reason: "empty" });
+          console.log(`🗑️ Empty room ${otherRoom.roomId} auto-deleted`);
+        } else {
+          // Reassign host if needed
+          if (wasHost) {
+            otherRoom.hostId = otherRoom.players[0].userId;
+            io.to(otherRoom.roomId).emit("new_host", {
+              newHostId: otherRoom.hostId.toString(),
+              newHostUsername: otherRoom.players[0].username,
+            });
+          }
+          await otherRoom.save();
+          io.to(otherRoom.roomId).emit("update_players", otherRoom.players);
+        }
+      }
+
+      // ✅ STEP 8: Add new player with ATOMIC OPERATION
+      const newPlayer = {
+        userId,
+        username: username.trim(),
+        isAlive: true,
+        isReady: false,
+        votes: 0,
+        isHealed: false,
+        hasVoted: false,
+        voice: [],
+      };
+
+      let saveSuccess = false;
+
+      for (let retryCount = 0; retryCount <= maxRetries; retryCount++) {
+        try {
+          // Re-fetch to get latest state
+          const latestGameRoom = await Game.findOne({ roomId });
+
+          if (!latestGameRoom) {
+            pendingJoins.delete(requestKey);
+            socket.emit("error", { message: "Room was deleted during join" });
+            return;
+          }
+
+          // Final duplicate check on fresh data
+          const finalDupeCheck = latestGameRoom.players.findIndex(
+            (p) => p.userId.toString() === userId.toString()
+          );
+
+          if (finalDupeCheck !== -1) {
+            console.log(
+              `🔍 User ${username} was added by another process, using existing`
+            );
+            gameRoom = latestGameRoom; // Use the latest data
+            saveSuccess = true;
+            break;
+          }
+
+          // Add player and save atomically
+          latestGameRoom.players.push(newPlayer);
+          await latestGameRoom.save();
+
+          gameRoom = latestGameRoom;
+          saveSuccess = true;
+          console.log(
+            `✅ User ${username} added to room ${roomId}. Total players: ${gameRoom.players.length}`
+          );
+          break;
+        } catch (saveErr) {
+          console.warn(
+            `⚠️ Save attempt ${retryCount + 1} failed: ${saveErr.message}`
+          );
+
+          if (retryCount === maxRetries) {
+            throw saveErr;
+          }
+
+          await new Promise((resolve) =>
+            setTimeout(resolve, 100 * (retryCount + 1))
+          );
+        }
+      }
+
+      if (!saveSuccess) {
+        pendingJoins.delete(requestKey);
+        socket.emit("error", {
+          message: "Failed to join room after multiple attempts",
+        });
+        return;
+      }
+
+      // ✅ STEP 9: Handle socket join and responses
+      socket.join(roomId);
+      socket.data = { userId, roomId };
+
+      // Send success responses
       socket.emit("joined_room", gameRoom);
       io.to(roomId).emit("update_players", gameRoom.players);
-      io.to(roomId).emit("game_phase", gameRoom);
-      await sendRooms();
+      io.to(roomId).emit("player_joined", {
+        userId,
+        username: username.trim(),
+        playersCount: gameRoom.players.length,
+      });
 
-      console.log(`✅ User ${username} successfully joined room ${roomId}`);
+      console.log(
+        `✅ User ${username} successfully joined room ${roomId}. Total players: ${gameRoom.players.length}`
+      );
+
+      // Update global room list
+      await sendRooms();
     } catch (err) {
       console.error("❌ join_room error:", err.message);
-      socket.emit("error", { message: "Failed to join room" });
+      console.error("Stack trace:", err.stack);
+      socket.emit("error", {
+        message: "Failed to join room",
+        details:
+          process.env.NODE_ENV === "development"
+            ? err.message
+            : "Internal error",
+      });
+    } finally {
+      // ✅ CRITICAL: Always cleanup pending request
+      pendingJoins.delete(requestKey);
     }
   });
 
+  // ✅ Add cleanup function for server restart
+  process.on("SIGTERM", () => {
+    pendingJoins.clear();
+  });
+
+  process.on("SIGINT", () => {
+    pendingJoins.clear();
+  });
+
+  console.log(
+    "✅ Enhanced room join event handler with duplicate prevention enabled"
+  );
   // ===== READY TOGGLE EVENT =====
   socket.on("ready", async ({ roomId, userId }) => {
     try {

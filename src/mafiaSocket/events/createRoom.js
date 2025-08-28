@@ -1,0 +1,55 @@
+import Game from "../../models/Game.js";
+import User from "../../models/User.js";
+import uniqId from "uniqid";
+import generateCode from "../../utils/generateCode.js";
+
+export const createRoom = async (io, socket, data) => {
+  const user = await User.findById(data.hostId);
+  console.log("DATA: ", data);
+  console.log("user", user);
+
+  if (!user) {
+    socket.emit("error", { message: "User not found" });
+    return;
+  }
+
+  if (!data.hostId || !data.roomName) {
+    socket.emit("error", { message: "Missing hostId or roomName" });
+    return;
+  }
+
+  const newRoom = new Game({
+    roomId: generateCode(),
+    roomName: data.roomName,
+    hostId: data.hostId,
+    players: [{ userId: data.hostId, username: user.username }],
+  });
+
+  await newRoom.save();
+
+  socket.emit("joined_room", newRoom);
+  socket.emit("update_players", newRoom.players);
+  io.emit(
+    "update_rooms",
+    await Game.find({ players: { $not: { $size: 0 } } })
+      .sort({ createdAt: -1 })
+      .limit(100)
+  );
+  console.log("NEW ROOM: ", newRoom);
+};
+
+export const joinRoom = async (io, socket, data) => {};
+
+export const leaveRoom = async (io, socket, data) => {};
+
+export const readyGame = async (io, socket, data) => {
+  console.log("READY GAME: ", data);
+  const room = await Game.findOne({ roomId: data.roomId });
+  const player = await room.players.find((p) => String(p.userId) === data.userId);
+  console.log("ROOM     : ", room.players);
+  console.log("PLAYer   : ", player);
+  player.isReady = player.isReady ? false : true;
+  await room.save();
+
+  io.to(data.roomId).emit("update_players", room.players);
+};

@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import connectDB from './config/db.js';
 import app from './app.js';
 import { socketHandler } from './socket/gameSocket.js';
+import { socketGame } from './mafiaSocket/socketGame.js';
 
 dotenv.config();
 connectDB();
@@ -19,7 +20,7 @@ const io = new Server(server, {
 });
 
 // Прямой вызов обработчика
-socketHandler(io);
+socketGame(io);
 
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => {

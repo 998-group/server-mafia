@@ -13,6 +13,7 @@ import {
 const PHASE_DURATIONS = GAME_CONFIG.PHASE_DURATIONS;
 
 export class TimerManager {
+
   constructor(io) {
     this.io = io;
     this.roomTimers = new Map(); // Using Map for better performance
