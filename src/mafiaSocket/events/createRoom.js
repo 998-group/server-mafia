@@ -89,6 +89,7 @@ export const leaveRoom = async (io, socket, data) => {
 export const readyGame = async (io, socket, data) => {
   console.log("READY GAME: ", data);
   const room = await Game.findOne({ roomId: data.roomId });
+  console.log("ROOM: ", room);
   const player = room.players.find((p) => String(p.userId) === data.userId);
   console.log("ROOM: ", room.players);
   console.log("PLAYer: ", player);
@@ -100,6 +101,7 @@ export const readyGame = async (io, socket, data) => {
   const allReady = room.players.length >= 2 && room.players.every(p => p.isReady) 
   if(allReady) {
     io.to(data.roomId).emit("start_game")
+    console.log("START GAME: ", room)
   }
 
 };
