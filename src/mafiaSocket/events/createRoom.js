@@ -96,7 +96,7 @@ export const readyGame = async (io, socket, data) => {
 
   io.to(data.roomId).emit("update_players", room.players);
 
-  const allReady = room.players.length >= 2 && room.players.every(p => p.isReady) 
+  const allReady = room.players.length >= 4 && room.players.every(p => p.isReady) 
   if(allReady) {
     room.phase = 'started'
     await room.save();
