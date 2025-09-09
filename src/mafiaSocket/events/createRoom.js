@@ -1,6 +1,5 @@
 import Game from "../../models/Game.js";
 import User from "../../models/User.js";
-import uniqId from "uniqid";
 import generateCode from "../../utils/generateCode.js";
 import generateRole from "../helpers/generateRoles.js";
 
