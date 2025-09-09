@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 const playerSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "UserMafia", required: true },
   username: String,
-  gameRole: String,
+  gameRole: { type: String, enum: ["mafia", "doctor", "detective", "peaceful", "villager", null], default: "peaceful" },
   isAlive: { type: Boolean, default: true },
   isReady: { type: Boolean, default: false },
   isHealed: { type: Boolean, default: false },
@@ -38,4 +38,5 @@ const gameSchema = new mongoose.Schema({
   mafiaVotes: { type: [mafiaVoteSchema], default: [] },
 }, { timestamps: true });
 
+// export const Game = mongoose.model("Game", gameSchema);
 export default mongoose.model("Game", gameSchema);

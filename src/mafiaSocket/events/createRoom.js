@@ -104,5 +104,4 @@ export const readyGame = async (io, socket, data) => {
     io.to(data.roomId).emit("start_game")
     console.log("START GAME: ", room)
   }
-
 };
