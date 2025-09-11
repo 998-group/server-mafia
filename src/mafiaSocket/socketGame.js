@@ -6,6 +6,7 @@ import {
 } from "../mafiaSocket/events/createRoom.js";
 import Game from "../models/Game.js";
 import { getmyrole } from "./features/GameFeatures.js";
+import { timerEnd } from "./helpers/timeHelper.js";
 
 export const socketGame = (io) => {
   console.log(`🎮 Game Socket Handler initialized`);
@@ -22,7 +23,7 @@ export const socketGame = (io) => {
     socket.on("create_room", (data) => createRoom(io, socket, data));
     socket.on("join_room", (data) => joinRoom(io, socket, data));
     socket.on("ready", (data) => readyGame(io, socket, data));
-
+    socket.on("client_timer_end", (data) => timerEnd(io, data, socket));
     // ❗️ data ni qabul qilish shart
     socket.on("get_my_role", (data) => getmyrole(socket, data));
 
