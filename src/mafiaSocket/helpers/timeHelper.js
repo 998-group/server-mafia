@@ -54,5 +54,7 @@ export const timerEnd = async (io, data, socket) => {
     await findGame.save();
   }
 
+  io.to(data.roomId).emit("update_phase", findGame.phase);
+
   console.log("SARDOR BICH BOLA: ", findGame);
 };
