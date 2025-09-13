@@ -1,5 +1,14 @@
 import Game from "../../models/Game.js";
 
+async function checkVotesCount(players) {
+  const sorted = players.sort((a, b) => b.votes - a.votes);
+  console.log("SORTED: ", sorted);
+  const votesCount = sorted[0].votes;
+  votesCount.isAlive = false;
+  await votesCount.save();
+  return votesCount;
+}
+
 export const timerEnd = async (io, data, socket) => {
   const findGame = await Game.findOne({ roomId: data.roomId });
   if (!findGame) return socket.emit("error", { message: "Game not found" });
@@ -41,6 +50,10 @@ export const timerEnd = async (io, data, socket) => {
       await findGame.save();
     }
   } else if (findGame.phase === "day") {
+
+    checkVotesCount(findGame.players);
+    findGame.players.forEach((p) => p.votes = 0);
+
     if (villager.length >= 2 && mafiaCount.length == 0) {
       console.log("YUTDI:", villager);
       findGame.phase = "ended";

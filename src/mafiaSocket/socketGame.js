@@ -5,6 +5,7 @@ import {
   readyGame,
 } from "../mafiaSocket/events/createRoom.js";
 import Game from "../models/Game.js";
+import { votePlayer } from "./events/gameEvent.js";
 import { getmyrole } from "./features/GameFeatures.js";
 import { timerEnd } from "./helpers/timeHelper.js";
 
@@ -25,7 +26,7 @@ export const socketGame = (io) => {
     socket.on("ready", (data) => readyGame(io, socket, data));
     socket.on("client_timer_end", (data) => timerEnd(io, data, socket));
     socket.on("get_my_role", (data) => getmyrole(socket, data));
-
+    socket.on("vote_player", (data) => votePlayer(socket, data, io));
 
     socket.on("disconnect", () => {
       console.log(`🔌 User disconnected: ${socket.id}`);
