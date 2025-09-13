@@ -24,8 +24,8 @@ export const socketGame = (io) => {
     socket.on("join_room", (data) => joinRoom(io, socket, data));
     socket.on("ready", (data) => readyGame(io, socket, data));
     socket.on("client_timer_end", (data) => timerEnd(io, data, socket));
-    // ❗️ data ni qabul qilish shart
     socket.on("get_my_role", (data) => getmyrole(socket, data));
+
 
     socket.on("disconnect", () => {
       console.log(`🔌 User disconnected: ${socket.id}`);

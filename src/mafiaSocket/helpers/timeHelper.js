@@ -3,7 +3,7 @@ import Game from "../../models/Game.js";
 export const timerEnd = async (io, data, socket) => {
   const findGame = await Game.findOne({ roomId: data.roomId });
   if (!findGame) return socket.emit("error", { message: "Game not found" });
-
+  console.log("TIMER_END: ",data)
   const mafiaCount = findGame.players.filter((p) => p.gameRole === "mafia");
   const detectiveCount = findGame.players.filter(
     (p) => p.gameRole === "detective"
@@ -49,11 +49,11 @@ export const timerEnd = async (io, data, socket) => {
       findGame.phase = "ended";
       await findGame.save();
     }
-    
+
     findGame.phase = "night";
     await findGame.save();
   }
-
+  console.log("FINDED_GAME: ", findGame)
   io.to(data.roomId).emit("update_phase", findGame.phase);
 
   console.log("SARDOR BICH BOLA: ", findGame);
