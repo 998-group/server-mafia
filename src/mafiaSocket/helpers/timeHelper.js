@@ -53,6 +53,7 @@ export const timerEnd = async (io, data, socket) => {
 
     checkVotesCount(findGame.players);
     findGame.players.forEach((p) => p.votes = 0);
+    await findGame.save();
 
     if (villager.length >= 2 && mafiaCount.length == 0) {
       console.log("YUTDI:", villager);
