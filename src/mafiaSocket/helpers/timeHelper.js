@@ -2,9 +2,10 @@ import Game from "../../models/Game.js";
 
 async function checkVotesCount(players) {
   const sorted = players.sort((a, b) => b.votes - a.votes);
-  console.log("SORTED: ", sorted);
-  const votesCount = sorted[0].votes;
+  const votesCount = sorted[0];
+  
   votesCount.isAlive = false;
+
   await votesCount.save();
   return votesCount;
 }
@@ -67,8 +68,9 @@ export const timerEnd = async (io, data, socket) => {
       await findGame.save();
     }
   }
-  console.log("FINDED_GAME: ", findGame);
-  io.to(data.roomId).emit("update_phase", findGame.phase);
 
-  console.log("SARDOR BICH BOLA: ", findGame);
+  const filterLivePlayers = findGame.players.filter(item=>item.isAlive === false)
+  console.log("filterLivePlayers: ", filterLivePlayers);
+
+  io.to(data.roomId).emit("update_phase", findGame.phase);
 };
